@@ -1,0 +1,39 @@
+# 数据集（不上传原图）
+datasets/HMU‑CRC‑Hist550K/**/*
+!datasets/dataset_readme.md
+
+# 权重文件
+*.pth
+*.pkl
+pretrained/**/*.bin
+pretrained/**/*.safetensors
+outputs/weights/*
+
+# 输出图片
+outputs/figures/**/*.png
+
+# 中间表格
+outputs/intermediate_csv/*.csv
+
+# 日志
+logs/*.txt
+
+# python缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE、系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 压缩包
+*.7z
+*.zip
