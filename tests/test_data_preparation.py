@@ -179,6 +179,21 @@ class PreparationTests(unittest.TestCase):
         actual = explore.scan_patch_map(self.p["subset"])
         self.assertEqual(len(actual), 16)
 
+    def test_repeated_tissue_suffix_is_retained(self):
+        self.assertEqual(config.parse_patient_id("1434704_1568_21728_ADI_ADI.png", "ADI"), "1434704")
+        self.assertEqual(config.parse_patient_id("00101_1568_21728_ADI_ADI_ADI.png", "ADI"), "00101")
+        with self.assertRaises(ValueError):
+            config.parse_patient_id("1434704_1568_21728_ADI_TUM.png", "ADI")
+        with self.assertRaises(ValueError):
+            config.parse_patient_id("1434704_1568_21728_ADI_ADI.png", "TUM")
+        image = self.p["raw"] / "ADI" / "patient_00101_001.png"
+        image.rename(image.with_name("00101_1568_21728_ADI_ADI.png"))
+        self.explore("--images-only")
+        mapping = pd.read_csv(self.p["stat"] / "patch_patient_map.csv", dtype=str)
+        self.assertEqual(len(mapping), 48)
+        row = mapping.loc[mapping.img_name == "00101_1568_21728_ADI_ADI.png"].iloc[0]
+        self.assertEqual(row.patient_id, "00101")
+
 
 if __name__ == "__main__":
     unittest.main()

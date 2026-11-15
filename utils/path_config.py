@@ -37,9 +37,17 @@ def parse_patient_id(filename, expected_class=None):
     if (len(parts) == 3 and parts[0] == "patient"
             and parts[1] and parts[2] and parts[1] == parts[1].strip()):
         return parts[1]
-    if (len(parts) >= 3 and parts[-1] in CLASSES
-            and all(part.isascii() and part.isdigit() for part in parts[:-1])):
-        if expected_class is not None and parts[-1] != expected_class:
+    # 兼容重复添加类别后缀，如 1434704_1568_21728_ADI_ADI.png。
+    suffix_start = len(parts)
+    while suffix_start > 0 and parts[suffix_start - 1] in CLASSES:
+        suffix_start -= 1
+    labels = parts[suffix_start:]
+    numeric_parts = parts[:suffix_start]
+    if (labels and len(numeric_parts) >= 2
+            and all(part.isascii() and part.isdigit() for part in numeric_parts)):
+        if len(set(labels)) != 1:
+            raise ValueError(f"图片包含冲突的组织类别后缀：{filename}")
+        if expected_class is not None and labels[0] != expected_class:
             raise ValueError(f"图片类别与文件夹不一致：{filename}，所在文件夹：{expected_class}")
         return parts[0]
     raise ValueError(
