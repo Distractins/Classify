@@ -7,7 +7,7 @@ ROOT = Path(r"D:\xcjhhh\Classify")  # Linux 示例：Path(r"/data/Classify")
 CLASSES = ("ADI", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TUM")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 DATASET_NAME = "HMU‑CRC‑Hist550K"  # 与固定目录一致，使用不换行连字符 U+2011
-CLINICAL_NAME = "HMU‑CRC‑Clinical.xlsx"
+CLINICAL_NAME = "HMU-CRC-Clinical.xlsx"  # 实际 Excel 文件名使用普通连字符 -
 # =================================================
 
 
