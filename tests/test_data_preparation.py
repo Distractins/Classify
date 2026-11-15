@@ -131,6 +131,21 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(len(subset_clinical), 2)
         self.assertTrue(set(subset_clinical.Patient).issubset(self.ids))
 
+    def test_clinical_id_diagnostic_reports_all_problem_rows(self):
+        pd.DataFrame({"Patient": ["00101", "00101", "", "00239"],
+                      "MSI": ["MSS", "MSI-H", "MSS", "MSS"],
+                      "Age": [50, 51, 60, 70]}).to_excel(self.p["clinical"], index=False)
+        before = self.p["clinical"].read_bytes()
+        with self.assertRaises(ValueError):
+            self.explore()
+        report = pd.read_csv(self.p["stat"] / "clinical_id_issues.csv",
+                             dtype=str, keep_default_na=False)
+        self.assertEqual(report.excel_row.tolist(), ["2", "3", "4"])
+        self.assertEqual(report.issue.tolist(), ["duplicate_id", "duplicate_id", "empty_id"])
+        self.assertEqual(report.patient_id_raw.tolist(), ["00101", "00101", ""])
+        self.assertEqual(report.source_Age.tolist(), ["50", "51", "60"])
+        self.assertEqual(self.p["clinical"].read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

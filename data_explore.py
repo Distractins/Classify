@@ -53,7 +53,7 @@ def normalize_msi(value):
     return "MSI-H" if key == "MSIH" else "MSS" if key == "MSS" else "UNKNOWN"
 
 
-def read_clinical(path, id_column=None, msi_column=None):
+def read_clinical(path, id_column=None, msi_column=None, diagnostic_dir=None):
     if not path.is_file():
         raise FileNotFoundError(f"临床表不存在：{path}")
     columns = pd.read_excel(path, nrows=0).columns
@@ -73,9 +73,33 @@ def read_clinical(path, id_column=None, msi_column=None):
             "未找到明确的 MSI 标签列，全部记为 UNKNOWN；仍可统计组织和患者数据，"
             "但无法平衡 MSI-H/MSS。不会自动将 immunohistochemistry 转成 MSI。"
         )
+    original_ids = table.patient_id.copy()
     table["patient_id"] = table.patient_id.str.strip()
-    if table.patient_id.eq("").any() or table.patient_id.duplicated().any():
-        raise ValueError("临床患者ID为空或重复；请先核查，不自动转换数值或补零。")
+    empty = table.patient_id.eq("")
+    duplicate = ~empty & table.patient_id.duplicated(keep=False)
+    if empty.any() or duplicate.any():
+        # 导出完整问题行，Excel 行号 = DataFrame 索引 + 表头行 + 从 1 起算。
+        full = pd.read_excel(path, dtype=str, keep_default_na=False)
+        issues = pd.DataFrame({
+            "excel_row": table.index + 2,
+            "patient_id_raw": original_ids,
+            "patient_id_normalized": table.patient_id,
+            "issue": ["empty_id" if blank else "duplicate_id" if repeated else ""
+                      for blank, repeated in zip(empty, duplicate)],
+        }).join(full.add_prefix("source_"))
+        issues = issues.loc[empty | duplicate]
+        destination = Path(diagnostic_dir) if diagnostic_dir is not None else path.parent
+        os.makedirs(destination, exist_ok=True)
+        report_path = destination / "clinical_id_issues.csv"
+        issues.to_csv(report_path, index=False, encoding="utf-8-sig")
+        examples = table.loc[duplicate, "patient_id"].drop_duplicates().head(10).tolist()
+        raise ValueError(
+            f"临床患者ID异常：空ID {int(empty.sum())} 行；"
+            f"重复ID {table.loc[duplicate, 'patient_id'].nunique()} 个，"
+            f"涉及 {int(duplicate.sum())} 行；示例 {examples}。"
+            f"完整问题行及 Excel 行号已保存：{report_path}。"
+            "未自动删除、合并或补零，请先核查报告。"
+        )
     table["msi_status"] = table.msi_status_raw.map(normalize_msi)
     return table
 
@@ -159,7 +183,7 @@ def main(argv=None):
     p = config.paths(args.root)
     config.prepare_plotting(args.root)
     os.makedirs(p["stat"], exist_ok=True)
-    clinical = read_clinical(p["clinical"], args.id_column, args.msi_column)
+    clinical = read_clinical(p["clinical"], args.id_column, args.msi_column, p["stat"])
     mapping = scan_patch_map(p["raw"])
     counts = mapping.cls.value_counts().reindex(config.CLASSES, fill_value=0)
     patients = patient_counts(mapping).merge(clinical, on="patient_id", how="outer", validate="one_to_one", indicator=True)

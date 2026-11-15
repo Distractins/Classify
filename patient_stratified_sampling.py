@@ -86,7 +86,7 @@ def main(argv=None):
     canonical = lambda frame: frame.sort_values(columns).reset_index(drop=True)
     if not canonical(mapping).equals(canonical(current)):
         raise ValueError("映射与当前完整数据不一致，请重新运行 data_explore.py；禁止用部分映射抽样。")
-    clinical = read_clinical(p["clinical"], args.id_column, args.msi_column)
+    clinical = read_clinical(p["clinical"], args.id_column, args.msi_column, p["stat"])
     patients = patient_counts(mapping).merge(clinical, on="patient_id", how="left", validate="one_to_one")
     if patients.msi_status.isna().any():
         missing = patients.loc[patients.msi_status.isna(), "patient_id"].tolist()
