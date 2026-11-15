@@ -105,6 +105,11 @@ python patient_stratified_sampling.py --help
 python data_explore.py
 # 临床表存在冲突、暂时只需统计图片规模时，不读取临床表。
 python data_explore.py --images-only
+# 默认断点续跑：中断后再次执行同一命令即可。
+# 更频繁保存断点（每 200 张），减少进程被强制终止时的重复工作。
+python data_explore.py --images-only --checkpoint-every 200
+# 只有原始文件列表或解析规则变化、或需要重新扫描时才使用：
+python data_explore.py --images-only --restart-scan
 # 可选：解码全部图片排查损坏文件；会增加磁盘读取时间。
 python data_explore.py --check-images pil
 # 或使用 OpenCV，支持 Windows 中文路径。
@@ -122,6 +127,8 @@ python data_explore.py --id-column "患者编号" --msi-column "MSI状态"
 MSI-H 和 MSS 分别统计；MSI-L、空值及其他未明确编码统一记为 UNKNOWN，保留原始状态，绝不擅自归入 MSS。输出临床表全部患者分布及实际有 patch 的患者分布，避免把无图像患者算入可采样人数。
 
 `output/stat/` 产物：
+
+扫描断点保存在 `output/stat/scan_checkpoint.sqlite3`。默认每 1000 张提交一次，Ctrl+C 或解析异常也会保存此前成功解析的进度。中断后重新执行同一命令，复用已完成类别和当前类别已保存的图片；进程被强制关闭时，只需重做尚未提交的部分。请保留该断点文件。恢复时仍会读取目录文件列表以检查新增或删除，不会重新解析已缓存图片。修改文件列表或解析规则后需加 `--restart-scan`，该参数只重建扫描缓存，不改动原始数据。统计、绘图以及可选的图片解码检查会在扫描完成后重新运行，本轮未对这些步骤增加断点。正式三列映射表仅在八类扫描全部完成后生成，采样脚本仍独立完整复扫，不把扫描断点当作完整映射。
 
 | 文件 | 内容 |
 | --- | --- |

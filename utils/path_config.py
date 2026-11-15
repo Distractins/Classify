@@ -19,6 +19,7 @@ def paths(root=None):
     return {
         "root": base, "raw": raw, "clinical": raw / CLINICAL_NAME,
         "stat": base / "output" / "stat", "subset": subset,
+        "scan_checkpoint": base / "output" / "stat" / "scan_checkpoint.sqlite3",
         "sampling": base / "output" / "sampling",
     }
 

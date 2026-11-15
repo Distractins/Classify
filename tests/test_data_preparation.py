@@ -5,6 +5,8 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,45 @@ class PreparationTests(unittest.TestCase):
     def sample(self, *args):
         with contextlib.redirect_stdout(io.StringIO()):
             sampling.main(["--root", str(self.root), *args])
+
+    def test_scan_checkpoint_resumes_after_interrupt_without_reprocessing(self):
+        checkpoint = self.p["scan_checkpoint"]
+        original_resolve = Path.resolve
+
+        def interrupt_image(path, *args, **kwargs):
+            if path.parent == self.p["raw"] / "ADI" and path.name == "patient_00006_001.png":
+                raise KeyboardInterrupt()
+            return original_resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", interrupt_image):
+            with self.assertRaises(KeyboardInterrupt):
+                explore.scan_patch_map(self.p["raw"], checkpoint, checkpoint_every=1000)
+        with sqlite3.connect(checkpoint) as database:
+            cached = database.execute("SELECT name FROM patches WHERE cls='ADI'").fetchall()
+        self.assertEqual(len(cached), 2)
+        cached_names = {row[0] for row in cached}
+
+        def reject_reprocessing(path, *args, **kwargs):
+            if path.parent == self.p["raw"] / "ADI" and path.name in cached_names:
+                raise AssertionError("Cached image processed again")
+            return original_resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", reject_reprocessing):
+            resumed = explore.scan_patch_map(self.p["raw"], checkpoint, checkpoint_every=2)
+        expected = explore.scan_patch_map(self.p["raw"])
+        pd.testing.assert_frame_equal(resumed, expected)
+        pd.testing.assert_frame_equal(explore.scan_patch_map(self.p["raw"], checkpoint), expected)
+        with sqlite3.connect(checkpoint) as database:
+            self.assertEqual(database.execute("SELECT COUNT(*) FROM patches").fetchone()[0], 48)
+
+    def test_checkpoint_rejects_changed_file_list_and_can_restart(self):
+        checkpoint = self.p["scan_checkpoint"]
+        explore.scan_patch_map(self.p["raw"], checkpoint)
+        Image.new("RGB", (8, 8)).save(self.p["raw"] / "ADI" / "patient_00101_002.png")
+        with self.assertRaises(ValueError):
+            explore.scan_patch_map(self.p["raw"], checkpoint)
+        rebuilt = explore.scan_patch_map(self.p["raw"], checkpoint, restart=True)
+        self.assertEqual(len(rebuilt), 49)
 
     def test_explore_and_whole_patient_copy(self):
         before = {p: p.read_bytes() for p in self.p["raw"].rglob("*") if p.is_file()}
@@ -110,7 +151,7 @@ class PreparationTests(unittest.TestCase):
         self.explore("--check-images", "opencv")
         (self.p["raw"] / "ADI" / "patient_00101_002.png").write_bytes(b"broken-image")
         with self.assertRaises(ValueError):
-            self.explore("--check-images", "pil")
+            self.explore("--check-images", "pil", "--restart-scan")
         bad = pd.read_csv(self.p["stat"] / "invalid_images.csv", dtype=str)
         self.assertEqual(bad.patient_id.tolist(), ["00101"])
 

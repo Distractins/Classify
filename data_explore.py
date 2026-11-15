@@ -4,6 +4,10 @@ import json
 import os
 import re
 import warnings
+import hashlib
+import inspect
+import sqlite3
+from contextlib import ExitStack, closing
 from pathlib import Path
 
 import pandas as pd
@@ -11,29 +15,105 @@ from tqdm import tqdm
 from utils import path_config as config
 
 
-def scan_patch_map(raw):
-    """完整扫描；类别内相对路径写入 img_name，支持嵌套子目录。"""
+def scan_patch_map(raw, checkpoint_path=None, checkpoint_every=1000, restart=False):
+    """分批提交扫描结果；采样脚本默认不使用缓存，仍独立完整复扫。"""
+    if checkpoint_every < 1:
+        raise ValueError("checkpoint-every 必须为正整数。")
+    raw = Path(raw).resolve()
     records, seen = [], set()
-    for cls in config.CLASSES:
-        folder = raw / cls
-        if not folder.is_dir():
-            raise FileNotFoundError(f"类别目录不存在：{folder}")
-        for image in tqdm(sorted(folder.rglob("*")), desc=f"扫描 {cls}", unit="file"):
-            if not image.is_file() or image.suffix.lower() not in config.IMAGE_SUFFIXES:
-                continue
-            resolved = image.resolve()
+    with ExitStack() as stack:
+        database = None
+        if checkpoint_path is not None:
+            checkpoint_path = Path(checkpoint_path)
+            os.makedirs(checkpoint_path.parent, exist_ok=True)
+            database = stack.enter_context(closing(sqlite3.connect(checkpoint_path)))
+            database.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            database.execute("CREATE TABLE IF NOT EXISTS manifests (cls TEXT PRIMARY KEY, digest TEXT NOT NULL)")
+            database.execute("CREATE TABLE IF NOT EXISTS patches (cls TEXT, name TEXT, patient_id TEXT, resolved TEXT, PRIMARY KEY(cls, name))")
+            signature = hashlib.sha256(json.dumps({
+                "version": 1, "raw": str(raw), "classes": config.CLASSES,
+                "extensions": sorted(config.IMAGE_SUFFIXES),
+                "parser": inspect.getsource(config.parse_patient_id),
+            }, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+            if restart:
+                with database:
+                    database.execute("DELETE FROM patches")
+                    database.execute("DELETE FROM manifests")
+                    database.execute("DELETE FROM metadata")
+                print("已重置扫描断点，重新扫描；原始数据不变。")
+            saved = database.execute("SELECT value FROM metadata WHERE key='signature'").fetchone()
+            if saved is not None and saved[0] != signature:
+                raise ValueError("断点的数据根目录或解析规则已变化，请加 --restart-scan 重建扫描缓存。")
+            with database:
+                database.execute("INSERT OR REPLACE INTO metadata VALUES ('signature', ?)", (signature,))
+            print(f"扫描断点：{checkpoint_path}（每 {checkpoint_every} 张保存）")
+
+        for cls in config.CLASSES:
+            folder = raw / cls
+            if not folder.is_dir():
+                raise FileNotFoundError(f"类别目录不存在：{folder}")
+            print(f"正在读取 {cls} 文件列表……", flush=True)
+            images = [image for image in sorted(folder.rglob("*"))
+                      if image.is_file() and image.suffix.lower() in config.IMAGE_SUFFIXES]
+            names = [image.relative_to(folder).as_posix() for image in images]
+            cached = {}
+            if database is not None:
+                digest = hashlib.sha256(json.dumps(names, ensure_ascii=False).encode("utf-8")).hexdigest()
+                manifest = database.execute("SELECT digest FROM manifests WHERE cls=?", (cls,)).fetchone()
+                if manifest is not None and manifest[0] != digest:
+                    raise ValueError(f"{cls} 文件列表与断点不一致，请加 --restart-scan 重建，避免遗漏图片。")
+                with database:
+                    database.execute("INSERT OR REPLACE INTO manifests VALUES (?, ?)", (cls, digest))
+                cached = {name: (pid, resolved) for name, pid, resolved in database.execute(
+                    "SELECT name, patient_id, resolved FROM patches WHERE cls=?", (cls,))}
+                if not set(cached).issubset(names):
+                    raise ValueError("断点记录与文件列表不一致，请加 --restart-scan 重建。")
+                if cached:
+                    print(f"{cls}：恢复 {len(cached):,}/{len(images):,} 张，继续剩余部分。")
+            # 缓存也必须纳入全部患者计数与重复源文件检查。
+            for name in names:
+                if name in cached:
+                    pid, resolved = cached[name]
+                    if resolved in seen:
+                        raise ValueError(f"重复引用源图：{resolved}")
+                    seen.add(resolved)
+                    records.append((name, pid, cls))
+            pending = []
+
+            def save_pending():
+                if database is not None and pending:
+                    with database:
+                        database.executemany("INSERT INTO patches VALUES (?, ?, ?, ?)", pending)
+                    pending.clear()
+
+            remaining = ((image, name) for image, name in zip(images, names) if name not in cached)
             try:
-                resolved.relative_to(folder.resolve())
-            except ValueError as error:
-                raise ValueError(f"图片链接越出类别目录：{image}") from error
-            if resolved in seen:
-                raise ValueError(f"重复引用源图：{image}")
-            seen.add(resolved)
-            records.append((image.relative_to(folder).as_posix(),
-                            config.parse_patient_id(image.name, expected_class=cls), cls))
+                with tqdm(total=len(images), initial=len(cached), desc=f"扫描 {cls}", unit="file") as progress:
+                    for image, name in remaining:
+                        resolved = image.resolve()
+                        try:
+                            resolved.relative_to(folder.resolve())
+                        except ValueError as error:
+                            raise ValueError(f"图片链接越出类别目录：{image}") from error
+                        if str(resolved) in seen:
+                            raise ValueError(f"重复引用源图：{image}")
+                        pid = config.parse_patient_id(image.name, expected_class=cls)
+                        seen.add(str(resolved))
+                        records.append((name, pid, cls))
+                        if database is not None:
+                            pending.append((cls, name, pid, str(resolved)))
+                            if len(pending) >= checkpoint_every:
+                                save_pending()
+                        progress.update(1)
+            except BaseException:
+                # Ctrl+C 或文件名报错时，保存此前已成功解析的图片；异常图片不会记为完成。
+                save_pending()
+                raise
+            save_pending()
     if not records:
         raise ValueError("未找到图片。")
-    return pd.DataFrame(records, columns=["img_name", "patient_id", "cls"])
+    return pd.DataFrame(records, columns=["img_name", "patient_id", "cls"]).sort_values(
+        ["cls", "img_name"]).reset_index(drop=True)
 
 
 def find_column(columns, explicit, aliases, name):
@@ -185,11 +265,15 @@ def main(argv=None):
     parser.add_argument("--id-column")
     parser.add_argument("--msi-column")
     parser.add_argument("--images-only", action="store_true", help="仅统计图像，不读取临床表；MSI 状态均为 UNKNOWN")
+    parser.add_argument("--checkpoint-every", type=int, default=1000, help="每 N 张图片提交一次扫描断点，默认自动恢复")
+    parser.add_argument("--restart-scan", action="store_true", help="清空扫描断点并重新扫描，不删除原始数据")
     parser.add_argument("--check-images", choices=["none", "pil", "opencv"], default="none")
     parser.add_argument("--heatmap-max-patients", type=int, default=0, help="0 展示全部患者，否则仅绘制 patch 最多的前 N 位")
     args = parser.parse_args(argv)
     if args.heatmap_max_patients < 0:
         parser.error("heatmap-max-patients 不能为负。")
+    if args.checkpoint_every < 1:
+        parser.error("checkpoint-every 必须为正整数。")
     p = config.paths(args.root)
     config.prepare_plotting(args.root)
     os.makedirs(p["stat"], exist_ok=True)
@@ -198,7 +282,8 @@ def main(argv=None):
         print("仅图像探查：未读取临床表，不统计临床患者数量，不进行 MSI 分层。")
     else:
         clinical = read_clinical(p["clinical"], args.id_column, args.msi_column, p["stat"])
-    mapping = scan_patch_map(p["raw"])
+    mapping = scan_patch_map(p["raw"], p["scan_checkpoint"], args.checkpoint_every, args.restart_scan)
+    print("八类扫描已全部完成，正在生成统计报告和绘图……", flush=True)
     counts = mapping.cls.value_counts().reindex(config.CLASSES, fill_value=0)
     patients = patient_counts(mapping).merge(clinical, on="patient_id", how="outer", validate="one_to_one", indicator=True)
     patients["clinical_matched"] = patients["_merge"].ne("left_only")
