@@ -31,13 +31,20 @@ def prepare_plotting(root=None):
     os.environ["MPLBACKEND"] = "Agg"
 
 
-def parse_patient_id(filename):
-    """patient_00101_001.png -> '00101'，原样保留前导零。"""
+def parse_patient_id(filename, expected_class=None):
+    """兼容 patient_00101_001.png 和 1302097_0_19264_ADI.png；保留字符串 ID。"""
     parts = Path(filename).stem.split("_")
-    if (len(parts) != 3 or parts[0] != "patient"
-            or not parts[1] or not parts[2] or parts[1] != parts[1].strip()):
-        raise ValueError(f"图片名不符合 patient_患者ID_patch序号 格式：{filename}")
-    return parts[1]
+    if (len(parts) == 3 and parts[0] == "patient"
+            and parts[1] and parts[2] and parts[1] == parts[1].strip()):
+        return parts[1]
+    if (len(parts) >= 3 and parts[-1] in CLASSES
+            and all(part.isascii() and part.isdigit() for part in parts[:-1])):
+        if expected_class is not None and parts[-1] != expected_class:
+            raise ValueError(f"图片类别与文件夹不一致：{filename}，所在文件夹：{expected_class}")
+        return parts[0]
+    raise ValueError(
+        f"不支持的图片名：{filename}；支持 patient_患者ID_序号 或 患者ID_数字序号_组织类别。"
+    )
 
 
 if __name__ == "__main__":

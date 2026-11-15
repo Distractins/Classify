@@ -156,6 +156,29 @@ class PreparationTests(unittest.TestCase):
         summary = json.loads((self.p["stat"] / "summary.json").read_text(encoding="utf-8"))
         self.assertFalse(summary["clinical_read"])
 
+    def test_actual_hmu_filename_and_literal_ihc_labels(self):
+        self.assertEqual(config.parse_patient_id("1302097_0_19264_ADI.png", "ADI"), "1302097")
+        self.assertEqual(config.parse_patient_id("00101_0_19264_ADI.png", "ADI"), "00101")
+        with self.assertRaises(ValueError):
+            config.parse_patient_id("1302097_0_19264_ADI.png", "TUM")
+        for cls in config.CLASSES:
+            for image in (self.p["raw"] / cls).glob("*.png"):
+                pid = config.parse_patient_id(image.name)
+                image.rename(image.with_name(f"{pid}_0_19264_{cls}.png"))
+        clinical = pd.read_excel(self.p["clinical"], dtype=str).rename(
+            columns={"PatientID": "Patient", "MSI": "immunohistochemistry"})
+        clinical.loc[2, "immunohistochemistry"] = "IHC:MLH1(Approximately 80% positive cells)"
+        clinical.to_excel(self.p["clinical"], index=False)
+        self.explore()
+        stats = pd.read_csv(self.p["stat"] / "patient_patch_stats.csv", dtype={"patient_id": str})
+        by_id = stats.set_index("patient_id")
+        self.assertEqual(by_id.loc[self.ids[0], "msi_status"], "MSI-H")
+        self.assertEqual(by_id.loc[self.ids[1], "msi_status"], "MSS")
+        self.assertEqual(by_id.loc[self.ids[2], "msi_status"], "UNKNOWN")
+        self.sample("--max-total-patches", "16", "--max-per-class", "2")
+        actual = explore.scan_patch_map(self.p["subset"])
+        self.assertEqual(len(actual), 16)
+
 
 if __name__ == "__main__":
     unittest.main()

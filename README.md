@@ -111,9 +111,9 @@ python data_explore.py --check-images pil
 python data_explore.py --check-images opencv
 ```
 
-按八个组织文件夹识别类别，按 `patient_00101_001.png` 解析字符串患者 ID `00101`；末段是 patch 序号。支持 png、jpg、jpeg、tif、tiff、bmp，不把患者 ID 转成整数，不自动补零。若 Excel 将 ID 实际存为数值 `101`，即使显示为 `00101` 也不会错误地自动匹配，应核查原始 ID 后修正临床表。
+按八个组织文件夹识别类别。真实文件名如 `1302097_0_19264_ADI.png`，取首段字符串 `1302097` 为患者 ID，并核对末段组织类别与文件夹一致；也兼容此前示例 `patient_00101_001.png`，取 `00101`。支持 png、jpg、jpeg、tif、tiff、bmp，不把患者 ID 转成整数，不自动补零。若 Excel 将 ID 实际存为数值 `101`，即使显示为 `00101` 也不会自动匹配，应核查原始 ID 后修正临床表。
 
-临床患者列支持 Patient、PatientID 等，MSI 列支持 MSI、MSI status 等。若没有明确 MSI 列，探查仍可运行，患者状态统一记录为 UNKNOWN，此时抽样只能尽量覆盖组织类别，无法平衡 MSI-H/MSS；不会自动解释 immunohistochemistry。若列名无法识别，可在两个脚本上都指定：
+临床患者列支持 Patient、PatientID 等，MSI 列优先识别 MSI、MSI status 等；若缺少这些列，则从 immunohistochemistry 中仅识别明确写出的 MSI-H/MSS，空白及 IHC 描述统一记为 UNKNOWN，不根据染色阳性比例推断标签。若没有可用列，仍可探查图片，但无法平衡 MSI-H/MSS。若列名无法识别，可在两个脚本上都指定：
 
 ```powershell
 python data_explore.py --id-column "患者编号" --msi-column "MSI状态"

@@ -30,7 +30,7 @@ def scan_patch_map(raw):
                 raise ValueError(f"重复引用源图：{image}")
             seen.add(resolved)
             records.append((image.relative_to(folder).as_posix(),
-                            config.parse_patient_id(image.name), cls))
+                            config.parse_patient_id(image.name, expected_class=cls), cls))
     if not records:
         raise ValueError("未找到图片。")
     return pd.DataFrame(records, columns=["img_name", "patient_id", "cls"])
@@ -62,6 +62,15 @@ def read_clinical(path, id_column=None, msi_column=None, diagnostic_dir=None):
     key = lambda value: re.sub(r"[\s_\-‑–/]+", "", str(value)).casefold()
     has_msi = any(key(col) in {key(alias) for alias in aliases} for col in columns)
     msi = find_column(columns, msi_column, aliases, "MSI") if msi_column or has_msi else None
+    if msi is None:
+        ihc = [col for col in columns if key(col) == "immunohistochemistry"]
+        if len(ihc) == 1:
+            msi = ihc[0]
+    if msi is not None and key(msi) == "immunohistochemistry":
+        warnings.warn(
+            "从 immunohistochemistry 仅识别明确的 MSI-H/MSS；空值及 IHC 描述记为 UNKNOWN，"
+            "不依据阳性比例推断 MSI。"
+        )
     selected = [pid, msi] if msi else [pid]
     table = pd.read_excel(path, usecols=selected, dtype=str, keep_default_na=False)
     table = table.rename(columns={pid: "patient_id"})
