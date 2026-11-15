@@ -103,6 +103,8 @@ python patient_stratified_sampling.py --help
 
 ```powershell
 python data_explore.py
+# 临床表存在冲突、暂时只需统计图片规模时，不读取临床表。
+python data_explore.py --images-only
 # 可选：解码全部图片排查损坏文件；会增加磁盘读取时间。
 python data_explore.py --check-images pil
 # 或使用 OpenCV，支持 Windows 中文路径。

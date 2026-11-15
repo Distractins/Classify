@@ -146,6 +146,16 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(report.source_Age.tolist(), ["50", "51", "60"])
         self.assertEqual(self.p["clinical"].read_bytes(), before)
 
+    def test_images_only_works_without_clinical_file(self):
+        self.p["clinical"].unlink()
+        self.explore("--images-only")
+        stats = pd.read_csv(self.p["stat"] / "patient_patch_stats.csv", dtype={"patient_id": str})
+        self.assertEqual(set(stats.patient_id), set(self.ids))
+        self.assertEqual(stats.total_patches.sum(), 48)
+        self.assertEqual(set(stats.msi_status), {"UNKNOWN"})
+        summary = json.loads((self.p["stat"] / "summary.json").read_text(encoding="utf-8"))
+        self.assertFalse(summary["clinical_read"])
+
 
 if __name__ == "__main__":
     unittest.main()

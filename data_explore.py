@@ -175,6 +175,7 @@ def main(argv=None):
     parser.add_argument("--root", help="临时覆盖 path_config.ROOT")
     parser.add_argument("--id-column")
     parser.add_argument("--msi-column")
+    parser.add_argument("--images-only", action="store_true", help="仅统计图像，不读取临床表；MSI 状态均为 UNKNOWN")
     parser.add_argument("--check-images", choices=["none", "pil", "opencv"], default="none")
     parser.add_argument("--heatmap-max-patients", type=int, default=0, help="0 展示全部患者，否则仅绘制 patch 最多的前 N 位")
     args = parser.parse_args(argv)
@@ -183,7 +184,11 @@ def main(argv=None):
     p = config.paths(args.root)
     config.prepare_plotting(args.root)
     os.makedirs(p["stat"], exist_ok=True)
-    clinical = read_clinical(p["clinical"], args.id_column, args.msi_column, p["stat"])
+    if args.images_only:
+        clinical = pd.DataFrame(columns=["patient_id", "msi_status_raw", "msi_status"])
+        print("仅图像探查：未读取临床表，不统计临床患者数量，不进行 MSI 分层。")
+    else:
+        clinical = read_clinical(p["clinical"], args.id_column, args.msi_column, p["stat"])
     mapping = scan_patch_map(p["raw"])
     counts = mapping.cls.value_counts().reindex(config.CLASSES, fill_value=0)
     patients = patient_counts(mapping).merge(clinical, on="patient_id", how="outer", validate="one_to_one", indicator=True)
@@ -210,15 +215,19 @@ def main(argv=None):
         if not bad.empty:
             raise ValueError(f"发现 {len(bad)} 张不可解码图片，见 invalid_images.csv；未丢弃任何 patch，请修复后重跑。")
     save_plots(counts, patients, p["stat"], args.heatmap_max_patients)
-    summary = {"raw_root": str(p["raw"]), "patches": len(mapping),
+    summary = {"raw_root": str(p["raw"]), "patches": len(mapping), "clinical_read": not args.images_only,
                "patch_patients": int(mapping.patient_id.nunique()), "clinical_patients": len(clinical),
                "unmatched_patch_patients": int((~patients.clinical_matched).sum())}
     (p["stat"] / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     print("\n==== 数据探查摘要 ====\n" + counts.to_string())
-    print(f"总 patch：{len(mapping):,}；图片患者：{summary['patch_patients']}；临床患者：{len(clinical)}")
+    clinical_count = "未读取" if args.images_only else str(len(clinical))
+    print(f"总 patch：{len(mapping):,}；图片患者：{summary['patch_patients']}；临床患者：{clinical_count}")
     print("MSI 患者分布：\n" + msi_counts.to_string())
     print("每患者 patch 数：\n" + patients.loc[patients.has_patches, "total_patches"].describe().to_string())
-    print(f"无临床匹配的图片患者：{summary['unmatched_patch_patients']}，请检查前导零及 ID。")
+    if args.images_only:
+        print("临床匹配未执行；报告中的 UNKNOWN 和未匹配标记不代表真实临床状态。")
+    else:
+        print(f"无临床匹配的图片患者：{summary['unmatched_patch_patients']}，请检查前导零及 ID。")
     print(f"统计与三张图已保存：{p['stat']}")
 
 
