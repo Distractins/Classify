@@ -114,6 +114,23 @@ class PreparationTests(unittest.TestCase):
         bad = pd.read_csv(self.p["stat"] / "invalid_images.csv", dtype=str)
         self.assertEqual(bad.patient_id.tolist(), ["00101"])
 
+    def test_patient_column_without_explicit_msi(self):
+        import warnings
+        clinical = pd.read_excel(self.p["clinical"], dtype=str).rename(columns={"PatientID": "Patient"})
+        clinical = clinical.drop(columns="MSI")
+        clinical["immunohistochemistry"] = "uninterpreted"
+        clinical.to_excel(self.p["clinical"], index=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.explore()
+            self.sample("--max-total-patches", "16", "--max-per-class", "2")
+        self.assertTrue(caught)
+        stats = pd.read_csv(self.p["stat"] / "patient_patch_stats.csv", dtype=str)
+        self.assertEqual(set(stats.msi_status), {"UNKNOWN"})
+        subset_clinical = pd.read_excel(self.p["subset"] / config.CLINICAL_NAME, dtype=str)
+        self.assertEqual(len(subset_clinical), 2)
+        self.assertTrue(set(subset_clinical.Patient).issubset(self.ids))
+
 
 if __name__ == "__main__":
     unittest.main()

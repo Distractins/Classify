@@ -132,7 +132,7 @@ def main(argv=None):
         # 输出只含选中患者的临床表，保持原临床列名，ID 以字符串存储。
         full_clinical = pd.read_excel(p["clinical"], dtype=str, keep_default_na=False)
         id_col = find_column(full_clinical.columns, args.id_column,
-                             ["PatientID", "patient_id", "患者ID", "患者编号"], "患者ID")
+                             ["Patient", "PatientID", "patient_id", "患者ID", "患者编号"], "患者ID")
         full_clinical.loc[full_clinical[id_col].str.strip().isin(selected)].to_excel(
             staging / config.CLINICAL_NAME, index=False)
         chosen.to_csv(staging / "patch_patient_map.csv", index=False, encoding="utf-8-sig")

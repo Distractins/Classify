@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -56,10 +57,22 @@ def read_clinical(path, id_column=None, msi_column=None):
     if not path.is_file():
         raise FileNotFoundError(f"临床表不存在：{path}")
     columns = pd.read_excel(path, nrows=0).columns
-    pid = find_column(columns, id_column, ["PatientID", "patient_id", "患者ID", "患者编号"], "患者ID")
-    msi = find_column(columns, msi_column, ["MSI", "MSI status", "MSI-H/MSS", "msi_label", "MSI状态"], "MSI")
-    table = pd.read_excel(path, usecols=[pid, msi], dtype=str, keep_default_na=False)
-    table = table.rename(columns={pid: "patient_id", msi: "msi_status_raw"})
+    pid = find_column(columns, id_column, ["Patient", "PatientID", "patient_id", "患者ID", "患者编号"], "患者ID")
+    aliases = ["MSI", "MSI status", "MSI-H/MSS", "msi_label", "MSI状态"]
+    key = lambda value: re.sub(r"[\s_\-‑–/]+", "", str(value)).casefold()
+    has_msi = any(key(col) in {key(alias) for alias in aliases} for col in columns)
+    msi = find_column(columns, msi_column, aliases, "MSI") if msi_column or has_msi else None
+    selected = [pid, msi] if msi else [pid]
+    table = pd.read_excel(path, usecols=selected, dtype=str, keep_default_na=False)
+    table = table.rename(columns={pid: "patient_id"})
+    if msi:
+        table = table.rename(columns={msi: "msi_status_raw"})
+    else:
+        table["msi_status_raw"] = ""
+        warnings.warn(
+            "未找到明确的 MSI 标签列，全部记为 UNKNOWN；仍可统计组织和患者数据，"
+            "但无法平衡 MSI-H/MSS。不会自动将 immunohistochemistry 转成 MSI。"
+        )
     table["patient_id"] = table.patient_id.str.strip()
     if table.patient_id.eq("").any() or table.patient_id.duplicated().any():
         raise ValueError("临床患者ID为空或重复；请先核查，不自动转换数值或补零。")
