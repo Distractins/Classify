@@ -1,6 +1,9 @@
 # 数据集（不上传原图）
 datasets/HMU‑CRC‑Hist550K/**/*
 !datasets/dataset_readme.md
+datasets/HMU‑CRC‑Hist550K-SUBSET/
+output/*
+!output/.gitkeep
 
 # 权重文件
 *.pth

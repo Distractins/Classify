@@ -9,6 +9,7 @@ seaborn
 numpy
 pandas
 openpyxl
+opencv-python<4.12
 pillow
 xgboost
 joblib

@@ -31,23 +31,25 @@ critical_constraint: **全部数据集划分必须为Patient‑Level患者级别
 known_bug_legacy_code: 原始ViTmodle.py、Resnet101.py、EfficientNet.py为图像级随机划分，存在数据泄露；硬编码Windows绝对磁盘路径，运行前必须修改为项目相对路径。
 </AI_META>
 
-## 目录完整结构
-├── README.md                           # 本项目说明文档（AI 读取入口）
-├── requirements.txt                    # python 依赖包
-├── .gitignore                          # git 忽略配置文件
-├── src/                                # 全部源代码
-│   ├── stage1_train_8cls/              # 【阶段一】patch 八分类训练代码
-│   │   ├── ViTmodle.py                 # ViT‑base‑patch16‑224‑in21k 训练评估
-│   │   ├── Resnet101.py                # ResNet101 训练评估
-│   │   ├── EfficientNet.py             # EfficientNet‑B0 训练评估
-│   │   ├── patient_dataset_split.py    # 【核心】读取临床表，实现患者级数据集划分，防止数据泄露
-│   │   └── focal_loss.py               # 可选扩展：FocalLoss 损失函数实现，用于难样本优化
-│   └── stage2_msi_prediction/          # 【阶段二】MSI 预测全流程代码
-│       ├── patch_infer_all.py          # 使用阶段一权重推理全部 patch，输出每张 patch 预测结果 csv（patient_id, image_path, pred_class）
-│       ├── patient_tme_agg_stat.py     # 根据 patient_id 聚合 patch 预测结果，统计每个患者 8 类组织占比，输出 patient_tme_feature.csv
-│       └── train_msi_model.py          # 读取 patient_tme_feature.csv + 临床表，拼接特征，训练 MSI 二分类模型，绘图评估
+## 当前工作：数据探查与整患者子集
+
+数据已解压。本阶段仅做探查、统计和子集构造，**不训练模型**。先在 Windows VSCode 调试，再迁移到 4080Super 机器。上方 `<AI_META>` 保持原文；下文更新了当前数据准备流程，替代旧的逐 patch 限额采样与全量训练步骤。
+
+**子集是从约 50G 全量数据中挑选的小规模版本。后续八分类训练只使用子集，不读取全集训练。患者是不可拆分单元：一位患者的所有类别、所有 patch 全部复制，或者完全不进入子集。** 原始数据只读，复制不会移动或删除原图；因此选中患者的完整副本仍存在于原始数据中。
+
+当前不创建训练/验证划分。后续只对选中患者生成一次患者级划分，阶段一和阶段二复用，同一患者不得跨训练/验证集。MSI 仅用于本次子集患者分层和后续 MSI 任务，不作为八类组织训练的标签或输入。
+
+## 目录与路径配置
+
+```text
+Classify/
+├── README.md
+├── data_explore.py
+├── patient_stratified_sampling.py
+├── utils/
+│   └── path_config.py
 ├── datasets/
-│   ├── HMU‑CRC‑Hist550K/
+│   ├── HMU‑CRC‑Hist550K/                  # 原始全量数据，不改动
 │   │   ├── ADI/
 │   │   ├── DEB/
 │   │   ├── LYM/
@@ -56,95 +58,132 @@ known_bug_legacy_code: 原始ViTmodle.py、Resnet101.py、EfficientNet.py为图�
 │   │   ├── NORM/
 │   │   ├── STR/
 │   │   ├── TUM/
-│   │   └── HMU‑CRC‑Clinical.xlsx      # 临床元数据表，PatientID、年龄、性别、TNM、分化、MSI‑H/MSS、生存信息
-│   └── dataset_readme.md              # 数据集下载来源说明
-├── outputs/
-│   ├── weights/                        # 模型权重存放目录
-│   │   ├── stage1_8cls/                # 阶段一八分类权重
-│   │   │   ├── vit_best.pth
-│   │   │   ├── resnet101_best.pth
-│   │   │   └── efficientnet_best.pth
-│   │   └── stage2_msi/                 # 阶段二 MSI 预测模型权重
-│   │       └── msi_xgb_model.pkl
-│   ├── figures/                         # 全部输出图片：混淆矩阵、ROC、柱状图、热力图
-│   │   ├── stage1_8cls/                # 阶段一产出图
-│   │   │   ├── *.png  归一化混淆矩阵、多分类 ROC 曲线、各类 Precision‑Recall‑F1 柱状图
-│   │   └── stage2_msi/                 # 阶段二产出图
-│   │       ├── msi_roc_curve.png       # MSI 二分类 ROC‑AUC 曲线
-│   │       ├── msi_confusion.png       # MSI 预测混淆矩阵
-│   │       ├── feature_importance.png  # 特征重要性柱状图（哪些 TME 组分影响 MSI 预测）
-│   │       └── tme_msi_corr_heatmap.png # TME 微环境特征与 MSI 标签相关性热力图
-│   └── intermediate_csv/               # 中间产出 csv 表格文件
-│       ├── patch_infer_result.csv      # 所有 patch 推理结果：patient_id, 图片路径，预测类别
-│       └── patient_tme_feature.csv     # 每个患者一行：8 类占比、年龄、性别、真实 MSI 标签
-└── logs/                                # 训练日志、打印报告文本
-├── stage1_log.txt
-└── stage2_log.txt
+│   │   └── HMU‑CRC‑Clinical.xlsx
+│   └── HMU‑CRC‑Hist550K-SUBSET/           # 整患者小规模子集，自动生成
+│       ├── ADI/ ... TUM/                 # 所选患者的全部 patch
+│       ├── HMU‑CRC‑Clinical.xlsx         # 仅所选患者，保留原表字段
+│       ├── patch_patient_map.csv
+│       ├── selected_patients.csv
+│       └── sampling_report.json
+├── output/                               # 本阶段产物
+│   ├── stat/                             # 全量数据探查 CSV 和图片
+│   ├── sampling/                         # 采样计划与报告
+│   └── .matplotlib/                      # 项目内绘图缓存
+├── pretrained/                           # 已下载的预训练模型
+├── src/stage1_train_8cls/                 # 已有八分类训练代码，本阶段不运行
+├── src/stage2_msi_prediction/             # 已有 MSI 代码，本阶段不运行
+├── outputs/                              # 后续训练权重、CSV、评估图
+└── tests/
+```
 
+只修改 `utils/path_config.py` 中的根路径：
 
-## 实验完整流程说明（两大阶段）
-### 📌阶段一：Patch 8分类模型训练
-> 目标：训练模型识别单张224×224病理patch属于8种微环境组织中哪一类。**此阶段完全不使用MSI标签，只使用patch图像+组织类别标签**
-1. 输入：`datasets/HMU‑CRC‑Hist550K`下ADI~TUM的patch图像
-2. 数据划分规则：
-    读取`HMU‑CRC‑Clinical.xlsx`获取PatientID，执行**患者级别划分**：把全部500位患者划分为训练患者集合、验证患者集合。同一患者全部patch只能全部属于训练集或者全部属于验证集。**禁止按图片随机划分**。
-3. 模型可选：ViT / ResNet101 / EfficientNet‑B0；损失默认CrossEntropyLoss；可替换FocalLoss优化STR/MUS、LYM/DEB难分类别。
-4. 训练、验证，保存最优权重到 `outputs/weights/stage1_8cls/`
-5. **阶段一需要生成的统计图**
-    1. 归一化混淆矩阵png：观察STR与MUS、LYM与DEB混淆程度
-    2. 多分类ROC曲线，输出每一类AUC、macro‑AUC
-    3. 各类Precision、Recall、F1分数柱状图，重点观察难分类别指标
-    4. classification_report文本保存到logs
+```python
+ROOT = Path(r"D:\xcjhhh\Classify")
+# Linux 机器示例：ROOT = Path(r"/data/Classify")
+```
 
-> 产物：8分类最优模型权重；阶段一各类评估图表；训练日志
+两个处理脚本都 import 此配置，不依赖 VSCode 终端当前目录。命令行 `--root` 可临时覆盖根路径。数据目录使用固定名称中的不换行连字符 `‑`（U+2011）；请保持磁盘名称与配置一致。若实际数据使用普通 `-`，在路径配置文件内统一修改 `DATASET_NAME` 和 `CLINICAL_NAME` 即可。
 
-### 📌阶段二：患者级TME特征统计 + MSI‑H/MSS预测
-> 前提：阶段一训练完成，得到8分类权重；复用阶段一的【患者划分】，**禁止重新划分数据集**
-> 分为3个子步骤
+## 1. 环境与本地检查
 
-#### 子步骤2‑1：对全部patch做推理
-1. 加载阶段一保存的8分类模型权重
-2. 遍历全部patch图像，每一张图片经过模型推理，得到预测组织类别
-3. 关联每一张patch归属的PatientID（需要建立图片文件名与PatientID映射关系）
-4. 输出中间文件：`outputs/intermediate_csv/patch_infer_result.csv`
-> 字段：`patient_id, image_file_path, predict_class`
+在 VSCode 选择 `YuHou` 解释器，终端进入项目根目录：
 
-#### 子步骤2‑2：按PatientID聚合统计患者级微环境TME占比特征
-读取patch_infer_result.csv，按patient_id分组聚合：
-统计该患者所有patch中8个类别的占比（百分比）
-> `TUM%、LYM%、STR%、MUC%、MUS%、NORM%、ADI%、DEB%`
+```powershell
+conda activate YuHou
+python -m pip install pandas matplotlib "opencv-python<4.12" pillow tqdm openpyxl
+python utils/path_config.py
+python data_explore.py --help
+python patient_stratified_sampling.py --help
+```
 
-将统计得到的8项百分比特征，与`HMU‑CRC‑Clinical.xlsx`做merge拼接：
-增加临床特征：年龄、性别；标签：MSI状态（MSI‑H=1，MSS=0）
+`pathlib`、`argparse`、`random`、`shutil` 等属于 Python 标准库。Excel 读写需要 `openpyxl`。当前两个数据处理步骤使用 CPU，不要求 CUDA 或任何预训练权重。
 
-输出中间表格：`outputs/intermediate_csv/patient_tme_feature.csv`
-> 每一行代表一位患者；字段：patient_id，8类占比，年龄，性别，msi_label
+## 2. 数据探查
 
-#### 子步骤2‑3：训练MSI二分类预测模型
-输入特征：`[TUM%,LYM%,STR%,MUC%,MUS%,NORM%,ADI%,DEB%,年龄,性别]`
-标签：msi_label（MSI‑H / MSS二分类）
-数据集划分：严格复用阶段一的患者划分，训练集患者用于训练MSI模型，验证集患者用于评估MSI模型，**不能打乱重新划分**。
-模型可选：XGBoost（推荐，方便输出特征重要性）或者简单MLP。
+```powershell
+python data_explore.py
+# 可选：解码全部图片排查损坏文件；会增加磁盘读取时间。
+python data_explore.py --check-images pil
+# 或使用 OpenCV，支持 Windows 中文路径。
+python data_explore.py --check-images opencv
+```
 
-#### ✅阶段二需要生成的论证统计图（全部保存至`outputs/figures/stage2_msi/`）
-1. MSI预测ROC曲线，输出AUC
-2. MSI任务混淆矩阵
-3. **特征重要性柱状图**：观察哪一个TME组分对MSI预测贡献最大（例如LYM淋巴细胞占比）
-4. **TME特征‑MSI标签相关性热力图**：展示8个微环境占比特征、年龄性别与MSI标签之间相关系数，用于论文可解释论证。
+按八个组织文件夹识别类别，按 `patient_00101_001.png` 解析字符串患者 ID `00101`；末段是 patch 序号。支持 png、jpg、jpeg、tif、tiff、bmp，不把患者 ID 转成整数，不自动补零。若 Excel 将 ID 实际存为数值 `101`，即使显示为 `00101` 也不会错误地自动匹配，应核查原始 ID 后修正临床表。
 
-> 消融实验组设置：
-> ①仅临床特征（年龄+性别）做MSI预测（基线）
-> ②仅TME微环境占比特征做MSI预测
-> ③TME占比特征 + 年龄性别融合（本实验完整方案）
-> 对比三组AUC，证明加入精准微环境特征可以提升MSI预测性能。
+临床列名默认识别 PatientID、MSI 等；若无法识别，可在两个脚本上都指定：
 
-## 运行顺序
-```bash
-# 阶段一：八分类训练
-python src/stage1_train_8cls/patient_dataset_split.py   # 执行患者级划分
-python src/stage1_train_8cls/EfficientNet.py             # 可选 ViTmodle.py / Resnet101.py
+```powershell
+python data_explore.py --id-column "患者编号" --msi-column "MSI状态"
+```
 
-# 阶段二
-python src/stage2_msi_prediction/patch_infer_all.py      # 全部patch推理
-python src/stage2_msi_prediction/patient_tme_agg_stat.py  # 聚合得到患者TME特征表
-python src/stage2_msi_prediction/train_msi_model.py       # 训练MSI预测模型、绘图
+MSI-H 和 MSS 分别统计；MSI-L、空值及其他未明确编码统一记为 UNKNOWN，保留原始状态，绝不擅自归入 MSS。输出临床表全部患者分布及实际有 patch 的患者分布，避免把无图像患者算入可采样人数。
+
+`output/stat/` 产物：
+
+| 文件 | 内容 |
+| --- | --- |
+| patch_patient_map.csv | img_name,patient_id,cls；img_name 为类别内相对路径 |
+| class_patch_counts.csv | 八类 patch 总数 |
+| patient_patch_stats.csv | 每患者总数、八类计数、临床匹配及 MSI 状态 |
+| msi_patient_counts.csv | MSI-H/MSS/UNKNOWN 患者数量 |
+| unmatched_patients.csv | 无临床匹配或无 patch 的患者 |
+| summary.json | 全量统计摘要 |
+| class_patch_counts.png | 类别数量柱状图 |
+| patient_patch_histogram.png | 每患者 patch 数量直方图 |
+| patient_class_heatmap.png | 患者 × 八类 patch 计数热力图 |
+| invalid_images.csv | 仅启用图片验证时生成，列出解码失败图片 |
+
+默认热力图包含所有有图片的患者，标签过多时只稀疏显示部分标签，CSV 仍完整。可用 `--heatmap-max-patients 100` 仅绘制 patch 最多的前 100 位，图标题会标明范围。损坏图片不会被静默剔除，请修复后重跑。
+
+## 3. 患者级分层抽样
+
+先根据统计结果设定预算。下面的 20000 和 5000 是示例上限，并非必须凑满的目标：
+
+```powershell
+# 先预览：不复制图片。
+python patient_stratified_sampling.py --max-total-patches 20000 --max-per-class 5000 --seed 42 --dry-run
+
+# 确认计划后正式复制。
+python patient_stratified_sampling.py --max-total-patches 20000 --max-per-class 5000 --seed 42
+
+# 个别类别可覆盖统一上限，--class-cap 可重复。
+python patient_stratified_sampling.py --max-total-patches 20000 --max-per-class 5000 --class-cap LYM=3000 --class-cap TUM=4000 --dry-run
+```
+
+策略是整患者贪心选择：先检查加入该患者全部 patch 后是否满足总量和全部类别上限；优先增加尚未覆盖的组织类别，并考虑稀有类别，再优先 MSI 少数患者层，随后优先较小患者包，相同优先级用固定种子打破平局。UNKNOWN 患者仍可为组织覆盖提供样本，不参与 MSI-H/MSS 平衡计数。
+
+**总量和每类上限是硬约束；八类覆盖、MSI-H/MSS 数量平衡是尽量满足的目标。** 这是启发式策略，不保证全局最优、恰好等量或用满预算。若单个患者已超过某项上限，该患者整位排除并记录；如果没有患者能满足限制，明确报错，绝不截取患者的一部分 patch。限制过严导致类别缺失时会报告，需调整预算。
+
+抽样前完整复扫并核对映射，防止旧表、缺行或新图片造成患者数据不完整；复制后再次扫描核对。原图始终不动。先写入 `.building-*` 临时目录，全部成功后才发布正式子集；失败时保留临时目录并打印位置。
+
+`output/sampling/` 输出 `patient_selection.csv`、`planned_patch_patient_map.csv`、`sampling_report.json`，包括每患者是否选择、计划内全部图片、最终八类计数、MSI 分布、缺失类别和超限患者。正式子集另附三列映射和所选临床表。已有正式子集时拒绝覆盖，重新选参数前请自行备份并移走旧子集；预览报告会被最新一次运行更新。
+
+图片患者未匹配临床 ID 时抽样停止，请根据 `unmatched_patients.csv` 修正匹配，不会静默丢弃患者或猜测前导零。
+
+## 4. 本地调试 → 4080Super 机器
+
+1. 本地修改 `path_config.py` 的 ROOT，按固定结构放好解压数据和临床表。
+2. 运行探查，检查统计、前导零、临床关联；先用 `--dry-run` 调整小规模预算。
+3. 正式构建子集，确认患者集合、完整性、每类数量和 MSI 分布。
+4. 将源码和所需数据上传到 4080Super 机器；Windows 虚拟环境不要直接复制到 Linux。
+5. 只修改该机器 `utils/path_config.py` 的 ROOT；保持子目录结构不变，重新安装上述依赖。
+6. 按相同命令进行探查和抽样；相同数据、参数和种子得到同一患者选择。也可直接上传本地已生成的完整子集。
+
+可运行合成数据测试，不需要真实数据和 GPU：
+
+```powershell
+python -m unittest discover -s tests -p test_data_preparation.py -v
+```
+
+后续训练数据入口应明确指向 `datasets/HMU‑CRC‑Hist550K-SUBSET/`，临床入口指向该子集内的 `HMU‑CRC‑Clinical.xlsx`。不要使用旧的全量患者划分名单，子集实验应在独立输出目录中创建属于该子集的一套患者名单并让两个阶段复用；旧实验名单保留备份。本次不修改或运行已有训练代码，接入子集后再开展训练。
+
+原 `build_patch_map.py`、`patient_based_sampling.py`、`ptach.py` 为旧方案，本轮不用；其中逐患者逐类别限额抽图不符合本轮“整患者保留”规则。
+
+## 后续完整实验流水线与产物
+
+Patch 八分类（组织标签）→ 选中患者全部 patch 推理 → 每患者八类占比 → 加入年龄/性别 → MSI-H/MSS 二分类。由于本次复制整患者，选中患者的组织占比不会被患者内限额抽样改变。未来训练/验证也必须以患者为单元。
+
+`outputs/weights/stage1_8cls/` 保存训练生成的 `vit_best.pth`、`resnet101_best.pth` 或 `efficientnet_best.pth`，无需提前下载这些八分类权重。`pretrained/` 保存已下载的通用预训练参数。
+
+`outputs/weights/stage2_msi/msi_xgb_model.pkl` 保存 MSI 模型；`outputs/intermediate_csv/` 保存患者名单、patch 推理和 TME 特征。`outputs/figures/stage1_8cls/` 保存组织分类评估图；`outputs/figures/stage2_msi/` 保存 MSI ROC、混淆矩阵、特征重要性和相关性热力图；`logs/` 保存训练报告。本阶段只生成单数 `output/` 下的准备产物及子集，不启动上述训练流水线。
