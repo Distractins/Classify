@@ -218,6 +218,8 @@ def read_clinical(path, id_column=None, msi_column=None, diagnostic_dir=None):
             "不依据阳性比例推断 MSI。"
         )
     selected = [pid, msi] if msi else [pid]
+    if "clinical_conflict" in columns:
+        selected.append("clinical_conflict")
     table = pd.read_excel(path, usecols=selected, dtype=str, keep_default_na=False)
     table = table.rename(columns={pid: "patient_id"})
     if msi:
@@ -248,15 +250,49 @@ def read_clinical(path, id_column=None, msi_column=None, diagnostic_dir=None):
         report_path = destination / "clinical_id_issues.csv"
         issues.to_csv(report_path, index=False, encoding="utf-8-sig")
         examples = table.loc[duplicate, "patient_id"].drop_duplicates().head(10).tolist()
-        raise ValueError(
+        # 用户已确认 563385 的两条临床记录冲突：仅对此 ID 隔离临床信息。
+        unresolved = set(table.loc[duplicate, "patient_id"]) - {"563385"}
+        if empty.any() or unresolved:
+            raise ValueError(
             f"临床患者ID异常：空ID {int(empty.sum())} 行；"
             f"重复ID {table.loc[duplicate, 'patient_id'].nunique()} 个，"
             f"涉及 {int(duplicate.sum())} 行；示例 {examples}。"
             f"完整问题行及 Excel 行号已保存：{report_path}。"
             "未自动删除、合并或补零，请先核查报告。"
-        )
+            )
+        warnings.warn("患者 563385 的冲突原始记录已导出；保留患者 ID，临床信息隔离，MSI 记为 UNKNOWN。")
+    conflict_ids = set(table.loc[duplicate, "patient_id"])
+    if "clinical_conflict" in table.columns:
+        marked = table.clinical_conflict.str.strip().str.casefold().isin(["true", "1"])
+        conflict_ids.update(table.loc[marked, "patient_id"])
+    # 不选择任何一条临床记录，只生成一个无临床取值的患者占位记录。
+    table = table.loc[~table.patient_id.isin(conflict_ids)].copy()
+    placeholders = pd.DataFrame({"patient_id": sorted(conflict_ids), "msi_status_raw": ""})
+    if not placeholders.empty:
+        table = pd.concat([table, placeholders], ignore_index=True)
+    table["clinical_conflict"] = table.patient_id.isin(conflict_ids)
     table["msi_status"] = table.msi_status_raw.map(normalize_msi)
+    table["msi_training_eligible"] = ~table.clinical_conflict & table.msi_status.isin(["MSI-H", "MSS"])
     return table
+
+
+def subset_clinical_table(path, selected_ids, clinical, id_column=None):
+    """为冲突患者导出唯一占位行，原临床取值全部留空，原 Excel 不改动。"""
+    full = pd.read_excel(path, dtype=str, keep_default_na=False)
+    pid = find_column(full.columns, id_column,
+                      ["Patient", "PatientID", "patient_id", "患者ID", "患者编号"], "患者ID")
+    ids = full[pid].str.strip()
+    conflicts = set(clinical.loc[clinical.clinical_conflict, "patient_id"]) & set(selected_ids)
+    result = full.loc[ids.isin(selected_ids) & ~ids.isin(conflicts)].copy()
+    result["clinical_conflict"] = False
+    for patient_id in sorted(conflicts):
+        row = {column: "" for column in full.columns}
+        row[pid] = patient_id
+        row["clinical_conflict"] = True
+        result = pd.concat([result, pd.DataFrame([row])], ignore_index=True)
+    eligibility = clinical.set_index("patient_id").msi_training_eligible
+    result["msi_training_eligible"] = result[pid].str.strip().map(eligibility)
+    return result
 
 
 def patient_counts(mapping):

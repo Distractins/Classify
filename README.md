@@ -186,6 +186,8 @@ python patient_stratified_sampling.py --max-total-patches 20000 --max-per-class 
 
 图片患者未匹配临床 ID 时抽样停止，请根据 `unmatched_patients.csv` 修正匹配，不会静默丢弃患者或猜测前导零。
 
+已确认患者 `563385` 有两条临床冲突记录，按用户授权隔离处理：原始 Excel 不修改，两条记录仍完整导出到 `output/stat/clinical_id_issues.csv`；患者只计一次，MSI 设为 UNKNOWN，`clinical_conflict=True`、`msi_training_eligible=False`。该患者仍可作为整患者参与组织子集选择，不强制选中，若选中则复制全部图片。子集 Excel 为其生成唯一占位行，除 ID 与标记外临床取值留空，不采用任何一条冲突记录。后续有监督 MSI 训练必须排除该患者；当前不运行训练。其他重复 ID 或空 ID 仍会报错，不能静默合并。
+
 ## 4. 本地调试 → 4080Super 机器
 
 1. 本地修改 `path_config.py` 的 ROOT，按固定结构放好解压数据和临床表。

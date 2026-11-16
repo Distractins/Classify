@@ -9,7 +9,7 @@ import tempfile
 import pandas as pd
 from tqdm import tqdm
 from utils import path_config as config
-from data_explore import find_column, patient_counts, read_clinical, scan_patch_map
+from data_explore import patient_counts, read_clinical, scan_patch_map, subset_clinical_table
 
 
 def choose_patients(patients, total_cap, class_caps, seed):
@@ -130,10 +130,7 @@ def main(argv=None):
         if not canonical(copied).equals(canonical(chosen)):
             raise RuntimeError("复制后患者/patch 完整性核查失败。")
         # 输出只含选中患者的临床表，保持原临床列名，ID 以字符串存储。
-        full_clinical = pd.read_excel(p["clinical"], dtype=str, keep_default_na=False)
-        id_col = find_column(full_clinical.columns, args.id_column,
-                             ["Patient", "PatientID", "patient_id", "患者ID", "患者编号"], "患者ID")
-        full_clinical.loc[full_clinical[id_col].str.strip().isin(selected)].to_excel(
+        subset_clinical_table(p["clinical"], selected, clinical, args.id_column).to_excel(
             staging / config.CLINICAL_NAME, index=False)
         chosen.to_csv(staging / "patch_patient_map.csv", index=False, encoding="utf-8-sig")
         patients[patients.patient_id.isin(selected)].to_csv(staging / "selected_patients.csv", index=False, encoding="utf-8-sig")

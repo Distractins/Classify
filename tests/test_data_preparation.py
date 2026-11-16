@@ -205,6 +205,35 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(report.source_Age.tolist(), ["50", "51", "60"])
         self.assertEqual(self.p["clinical"].read_bytes(), before)
 
+    def test_approved_conflict_retains_all_images_and_blanks_clinical(self):
+        for cls in config.CLASSES:
+            image = self.p["raw"] / cls / "patient_00101_001.png"
+            image.rename(image.with_name("563385_0_19264_" + cls + ".png"))
+        clinical = pd.read_excel(self.p["clinical"], dtype=str)
+        clinical.loc[0, "PatientID"] = "563385"
+        clinical.loc[0, "MSI"] = ""
+        duplicate = clinical.iloc[[0]].copy()
+        duplicate["Age"], duplicate["MSI"] = "75", "MSS"
+        pd.concat([clinical, duplicate], ignore_index=True).to_excel(self.p["clinical"], index=False)
+        before = self.p["clinical"].read_bytes()
+        self.explore()
+        stats = pd.read_csv(self.p["stat"] / "patient_patch_stats.csv", dtype={"patient_id": str})
+        conflict = stats.loc[stats.patient_id == "563385"]
+        self.assertEqual(len(conflict), 1)
+        self.assertEqual(conflict.msi_status.iloc[0], "UNKNOWN")
+        self.assertTrue(conflict.clinical_conflict.iloc[0])
+        self.assertFalse(conflict.msi_training_eligible.iloc[0])
+        self.assertEqual(conflict.total_patches.iloc[0], 8)
+        self.sample("--max-total-patches", "48", "--max-per-class", "6")
+        subset = pd.read_excel(self.p["subset"] / config.CLINICAL_NAME, dtype=str, keep_default_na=False)
+        row = subset.loc[subset.PatientID == "563385"]
+        self.assertEqual(len(row), 1)
+        self.assertEqual(row.Age.iloc[0], "")
+        self.assertEqual(row.MSI.iloc[0], "")
+        actual = explore.scan_patch_map(self.p["subset"])
+        self.assertEqual(actual.patient_id.eq("563385").sum(), 8)
+        self.assertEqual(before, self.p["clinical"].read_bytes())
+
     def test_images_only_works_without_clinical_file(self):
         self.p["clinical"].unlink()
         self.explore("--images-only")
