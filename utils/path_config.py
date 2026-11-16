@@ -1,66 +1,51 @@
-"""本阶段统一路径配置；迁移机器时只修改 ROOT 字符串。"""
+"""仅用于 patch 八分类；迁移机器时只修改 ROOT，不读取临床表。"""
 from pathlib import Path
+import argparse
 import os
 
 # ==================== CONFIG ====================
-ROOT = Path(r"D:\xcjhhh\Classify")  # Linux 示例：Path(r"/data/Classify")
+ROOT = Path(r"D:\xcjhhh\Classify")
+DATASET_NAME = "HMU‑CRC‑Hist550K"  # U+2011 连字符，须与实际目录一致
 CLASSES = ("ADI", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TUM")
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-DATASET_NAME = "HMU‑CRC‑Hist550K"  # 与固定目录一致，使用不换行连字符 U+2011
-CLINICAL_NAME = "HMU-CRC-Clinical.xlsx"  # 实际 Excel 文件名使用普通连字符 -
+SEED = 42
 # =================================================
 
 
 def paths(root=None):
-    """返回一套路径；--root 可临时覆盖 ROOT，不受终端工作目录影响。"""
     base = Path(root if root is not None else ROOT).expanduser().resolve()
-    raw = base / "datasets" / DATASET_NAME
-    subset = base / "datasets" / (DATASET_NAME + "-SUBSET")
     return {
-        "root": base, "raw": raw, "clinical": raw / CLINICAL_NAME,
-        "stat": base / "output" / "stat", "subset": subset,
-        "scan_checkpoint": base / "output" / "stat" / "scan_checkpoint.sqlite3",
-        "sampling": base / "output" / "sampling",
+        "root": base,
+        "raw": base / "datasets" / DATASET_NAME,
+        "stat": base / "output" / "stat",
+        "fast": base / "datasets" / (DATASET_NAME + "-FAST"),
+        "paper": base / "datasets" / (DATASET_NAME + "-PAPER"),
     }
 
 
 def prepare_plotting(root=None):
-    """让 Matplotlib 缓存在项目内，适用于 Windows 和无桌面的服务器。"""
     cache = paths(root)["root"] / "output" / ".matplotlib"
     os.makedirs(cache, exist_ok=True)
     os.environ["MPLCONFIGDIR"] = str(cache)
     os.environ["MPLBACKEND"] = "Agg"
 
 
-def parse_patient_id(filename, expected_class=None):
-    """兼容 patient_00101_001.png 和 1302097_0_19264_ADI.png；保留字符串 ID。"""
+def parse_slide_id(filename, expected_class):
+    """首段为 slideID，保留前导零；允许重复的同类后缀。"""
     parts = Path(filename).stem.split("_")
-    if (len(parts) == 3 and parts[0] == "patient"
-            and parts[1] and parts[2] and parts[1] == parts[1].strip()):
-        return parts[1]
-    # 兼容重复添加类别后缀，如 1434704_1568_21728_ADI_ADI.png。
-    suffix_start = len(parts)
-    while suffix_start > 0 and parts[suffix_start - 1] in CLASSES:
-        suffix_start -= 1
-    labels = parts[suffix_start:]
-    numeric_parts = parts[:suffix_start]
-    if (labels and len(numeric_parts) >= 2
-            and all(part.isascii() and part.isdigit() for part in numeric_parts)):
-        if len(set(labels)) != 1:
-            raise ValueError(f"图片包含冲突的组织类别后缀：{filename}")
-        if expected_class is not None and labels[0] != expected_class:
-            raise ValueError(f"图片类别与文件夹不一致：{filename}，所在文件夹：{expected_class}")
-        return parts[0]
-    raise ValueError(
-        f"不支持的图片名：{filename}；支持 patient_患者ID_序号 或 患者ID_数字序号_组织类别。"
-    )
+    end = len(parts)
+    while end and parts[end - 1] in CLASSES:
+        end -= 1
+    numbers, labels = parts[:end], parts[end:]
+    if (len(numbers) < 3 or not labels
+            or any(not (s.isascii() and s.isdigit()) for s in numbers)
+            or any(label != expected_class for label in labels)):
+        raise ValueError(f"图片名或类别不符合规则：{filename}；目录类别：{expected_class}")
+    return parts[0]
 
 
 if __name__ == "__main__":
-    import argparse
-    import json
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", help="预览另一台机器的根目录配置")
+    parser.add_argument("--root", help="临时覆盖项目根路径")
     args = parser.parse_args()
-    print(json.dumps({key: str(value) for key, value in paths(args.root).items()},
-                     indent=2, ensure_ascii=False))
+    for key, value in paths(args.root).items():
+        print(f"{key}: {value}")

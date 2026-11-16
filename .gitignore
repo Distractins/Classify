@@ -2,6 +2,10 @@
 datasets/HMU‑CRC‑Hist550K/**/*
 !datasets/dataset_readme.md
 datasets/HMU‑CRC‑Hist550K-SUBSET/
+datasets/HMU‑CRC‑Hist550K-FAST/
+datasets/HMU‑CRC‑Hist550K-PAPER/
+datasets/HMU‑CRC‑Hist550K-FAST.building/
+datasets/HMU‑CRC‑Hist550K-PAPER.building/
 output/*
 !output/.gitkeep
 
