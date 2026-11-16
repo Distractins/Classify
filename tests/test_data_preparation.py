@@ -97,6 +97,24 @@ class SlidePreparationTests(unittest.TestCase):
         self.assertEqual(len(stat.read_mapping(self.p["stat"] / "mapping.csv")), 320)
         self.assertTrue((self.p["stat"] / "class_patch_counts.png").is_file())
 
+    def test_import_legacy_without_rescanning(self):
+        source = self.mapping()
+        legacy = self.root / "output_legacy" / "stat" / "patch_patient_map.csv"
+        stat.save_csv(source.rename(columns={"slideID": "patient_id"}), legacy)
+        with patch.object(stat, "scan_class", side_effect=AssertionError("no rescan")):
+            self.call(stat.main, "--import-legacy-map", str(legacy))
+        pd.testing.assert_frame_equal(source, stat.read_mapping(self.p["stat"] / "mapping.csv"))
+        self.assertTrue(legacy.is_file())
+
+    def test_import_legacy_rejects_wrong_ids_before_cache_write(self):
+        source = self.mapping().rename(columns={"slideID": "patient_id"})
+        source.loc[0, "patient_id"] = "wrong"
+        legacy = self.root / "legacy.csv"
+        stat.save_csv(source, legacy)
+        with self.assertRaises(ValueError):
+            self.call(stat.main, "--import-legacy-map", str(legacy))
+        self.assertFalse((self.p["stat"] / "slide_scan_cache" / "ADI.csv").exists())
+
     def test_filename_validation(self):
         self.assertEqual(config.parse_slide_id("00123_1_2_ADI_ADI.png", "ADI"), "00123")
         for name in ("patient_001_002.png", "1_2_3_ADI_LYM.png", "1_2_3_TUM.png"):

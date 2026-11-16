@@ -46,10 +46,14 @@ def save_csv(frame, target):
 
 def read_mapping(path):
     data = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return validate_mapping(data, path)
+
+
+def validate_mapping(data, source):
     if list(data.columns) != ["img_name", "slideID", "cls"] or data.empty:
-        raise ValueError(f"映射表为空或字段错误：{path}")
+        raise ValueError(f"映射表为空或字段错误：{source}")
     if data.duplicated(["cls", "img_name"]).any():
-        raise ValueError(f"存在重复图片记录：{path}")
+        raise ValueError(f"存在重复图片记录：{source}")
     for row in data.itertuples(index=False):
         relative = Path(row.img_name)
         if (row.cls not in CLASSES or relative.is_absolute()
@@ -60,18 +64,37 @@ def read_mapping(path):
     return data.sort_values(["cls", "img_name"]).reset_index(drop=True)
 
 
+def import_legacy_mapping(source, cache):
+    """仅接受旧 ID 等于文件名前缀的完整八类映射，不猜测或改写 ID。"""
+    data = pd.read_csv(source, dtype=str, keep_default_na=False)
+    if list(data.columns) != ["img_name", "patient_id", "cls"]:
+        raise ValueError("旧映射必须为 img_name,patient_id,cls 三列")
+    data = validate_mapping(data.rename(columns={"patient_id": "slideID"}), source)
+    if set(data["cls"]) != set(CLASSES):
+        raise ValueError("旧映射缺少类别，不能作为完整八类统计导入")
+    for cls in CLASSES:
+        save_csv(data.loc[data["cls"].eq(cls)], cache / f"{cls}.csv")
+    print(f"已核对并导入旧映射：{len(data):,} 张 PNG / {data['slideID'].nunique()} 个 slideID。")
+    print("这是旧文件清单快照；未重新核对磁盘增删，采样前仍会检查当前原图清单。")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="临时覆盖根目录")
-    parser.add_argument("--scan-class", choices=CLASSES, help="只扫描并缓存一个类别")
-    parser.add_argument("--summarize", action="store_true", help="仅汇总八类缓存")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--scan-class", choices=CLASSES, help="只扫描并缓存一个类别")
+    modes.add_argument("--summarize", action="store_true", help="仅汇总八类缓存")
+    modes.add_argument("--import-legacy-map", metavar="CSV", help="核对并导入旧 patch_patient_map.csv，然后汇总")
     args = parser.parse_args(argv)
-    if args.scan_class and args.summarize:
-        parser.error("--scan-class 和 --summarize 不能同时使用")
     p = config.paths(args.root)
     cache = p["stat"] / "slide_scan_cache"
     cache.mkdir(parents=True, exist_ok=True)
-    if not args.summarize:
+    if args.import_legacy_map:
+        source = Path(args.import_legacy_map)
+        if not source.is_absolute():
+            source = p["root"] / source
+        import_legacy_mapping(source, cache)
+    elif not args.summarize:
         for cls in ([args.scan_class] if args.scan_class else CLASSES):
             save_csv(scan_class(p["raw"], cls), cache / f"{cls}.csv")
         if args.scan_class:

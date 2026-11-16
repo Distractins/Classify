@@ -98,6 +98,14 @@ python dataset_stat.py --summarize
 
 每类成功后保存缓存；中断只需重跑未完成类别，不支持类别内部逐文件断点。`--summarize` 仅汇总八类缓存，任何类别未完成会拒绝汇总。扫描期间保持原图不变，移动项目或修改数据后重新扫描。分批不能修复 Python 环境的 Illegal instruction 等原生崩溃。
 
+若已将旧 output 改名为 output_legacy，可直接复用已完成的图片映射：
+
+```powershell
+python dataset_stat.py --import-legacy-map "output_legacy/stat/patch_patient_map.csv"
+```
+
+这会逐行核对旧 patient_id 是否等于文件名首段，再将其作为 slideID，检查类别、重复记录和路径。只有八类都存在且全部记录通过验证，才生成新缓存并汇总，不读取临床文件、不修改旧 CSV、不重新扫描原图。导入的是旧文件清单快照，不能证明磁盘数据未变化；采样前仍会复扫当前原图清单。建议核对本次总数是否与之前的 547,971 张、500 个编号一致。
+
 产物位于 output/stat：
 
 | 文件 | 内容 |
