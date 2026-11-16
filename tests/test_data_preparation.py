@@ -81,6 +81,24 @@ class PreparationTests(unittest.TestCase):
         rebuilt = explore.scan_patch_map(self.p["raw"], checkpoint, restart=True)
         self.assertEqual(len(rebuilt), 49)
 
+    def test_bounded_class_batches_and_database_only_summary(self):
+        checkpoint = self.p["scan_checkpoint"]
+        explore.scan_patch_map(self.p["raw"], checkpoint, classes=["ADI"], max_files=2)
+        with sqlite3.connect(checkpoint) as database:
+            self.assertEqual(database.execute("SELECT COUNT(*) FROM patches").fetchone()[0], 2)
+        with self.assertRaises(ValueError):
+            explore.summarize_checkpoint(self.p["raw"], checkpoint)
+        explore.scan_patch_map(self.p["raw"], checkpoint, classes=["ADI"], max_files=2)
+        explore.scan_patch_map(self.p["raw"], checkpoint, classes=["ADI"], max_files=2)
+        for cls in config.CLASSES[1:]:
+            explore.scan_patch_map(self.p["raw"], checkpoint, classes=[cls])
+        expected = explore.scan_patch_map(self.p["raw"])
+        with patch.object(explore, "list_class_images", side_effect=AssertionError("Should not rescan")):
+            summary = explore.summarize_checkpoint(self.p["raw"], checkpoint)
+            self.explore("--images-only", "--summarize")
+        pd.testing.assert_frame_equal(summary, expected)
+        self.assertEqual(len(summary), 48)
+
     def test_explore_and_whole_patient_copy(self):
         before = {p: p.read_bytes() for p in self.p["raw"].rglob("*") if p.is_file()}
         self.explore("--check-images", "pil")

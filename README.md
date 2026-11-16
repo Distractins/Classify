@@ -101,6 +101,22 @@ python patient_stratified_sampling.py --help
 
 ## 2. 数据探查
 
+推荐分批扫描，每条命令可以单独运行，中断后重复同一条即可继续：
+
+```powershell
+python -X faulthandler -u data_explore.py --scan-class ADI --max-files 5000 --checkpoint-every 200
+```
+
+重复运行直到 ADI 进度达到 100%，然后将 ADI 依次改为 DEB、LYM、MUC、MUS、NORM、STR、TUM。也可不加 `--max-files`，一次处理完一个类别。每批仍枚举当前类别文件名，但最多解析指定数量的新图片，不同时扫描其他类别。分批扫描不读取临床表、不生成不完整的全量映射。
+
+八类完成后，只读取数据库生成报告和图：
+
+```powershell
+python data_explore.py --images-only --summarize
+```
+
+任一类别未完成时会拒绝汇总。已有旧断点可继续使用，但每类至少用 `--scan-class` 执行一次以核验列表和写入完成标记；已缓存图片不会重复解析。分批期间请保持原图目录不变；`--summarize` 统计的是已扫描的快照，不检查后续增删。仍支持下面的一次性扫描方式。
+
 ```powershell
 python data_explore.py
 # 临床表存在冲突、暂时只需统计图片规模时，不读取临床表。
@@ -187,7 +203,7 @@ python -m unittest discover -s tests -p test_data_preparation.py -v
 
 后续训练数据入口应明确指向 `datasets/HMU‑CRC‑Hist550K-SUBSET/`，临床入口指向该子集内的 `HMU‑CRC‑Clinical.xlsx`。不要使用旧的全量患者划分名单，子集实验应在独立输出目录中创建属于该子集的一套患者名单并让两个阶段复用；旧实验名单保留备份。本次不修改或运行已有训练代码，接入子集后再开展训练。
 
-原 `build_patch_map.py`、`patient_based_sampling.py`、`ptach.py` 为旧方案，本轮不用；其中逐患者逐类别限额抽图不符合本轮“整患者保留”规则。
+旧方案 `build_patch_map.py`、`patient_based_sampling.py`、`ptach.py` 已删除；当前仅使用 `data_explore.py` 和 `patient_stratified_sampling.py` 准备数据。
 
 ## 后续完整实验流水线与产物
 
