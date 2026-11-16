@@ -7,12 +7,36 @@ import warnings
 import hashlib
 import inspect
 import sqlite3
+import faulthandler
+import sys
+import traceback
+from datetime import datetime
 from contextlib import ExitStack, closing
 from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
 from utils import path_config as config
+
+
+def list_class_images(folder):
+    """用 os.scandir/os.walk 枚举，避免为整个目录树保留大量 Path 对象。"""
+    names = []
+
+    def fail(error):
+        raise error  # os.walk 默认忽略部分目录访问异常；这里必须显式报错。
+
+    for directory, subdirs, filenames in os.walk(folder, onerror=fail, followlinks=False):
+        for name in subdirs:
+            if os.path.islink(os.path.join(directory, name)):
+                raise ValueError(f"不支持类别内的目录符号链接，请检查：{os.path.join(directory, name)}")
+        for filename in filenames:
+            if os.path.splitext(filename)[1].lower() in config.IMAGE_SUFFIXES:
+                relative = os.path.relpath(os.path.join(directory, filename), folder)
+                names.append(relative.replace(os.sep, "/"))
+                if len(names) % 10000 == 0:
+                    print(f"文件列表已读取 {len(names):,} 张……", flush=True)
+    return sorted(names)
 
 
 def scan_patch_map(raw, checkpoint_path=None, checkpoint_every=1000, restart=False):
@@ -53,9 +77,8 @@ def scan_patch_map(raw, checkpoint_path=None, checkpoint_every=1000, restart=Fal
             if not folder.is_dir():
                 raise FileNotFoundError(f"类别目录不存在：{folder}")
             print(f"正在读取 {cls} 文件列表……", flush=True)
-            images = [image for image in sorted(folder.rglob("*"))
-                      if image.is_file() and image.suffix.lower() in config.IMAGE_SUFFIXES]
-            names = [image.relative_to(folder).as_posix() for image in images]
+            names = list_class_images(folder)
+            print(f"{cls} 文件列表读取完成：{len(names):,} 张。", flush=True)
             cached = {}
             if database is not None:
                 digest = hashlib.sha256(json.dumps(names, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -69,7 +92,7 @@ def scan_patch_map(raw, checkpoint_path=None, checkpoint_every=1000, restart=Fal
                 if not set(cached).issubset(names):
                     raise ValueError("断点记录与文件列表不一致，请加 --restart-scan 重建。")
                 if cached:
-                    print(f"{cls}：恢复 {len(cached):,}/{len(images):,} 张，继续剩余部分。")
+                    print(f"{cls}：恢复 {len(cached):,}/{len(names):,} 张，继续剩余部分。", flush=True)
             # 缓存也必须纳入全部患者计数与重复源文件检查。
             for name in names:
                 if name in cached:
@@ -86,9 +109,9 @@ def scan_patch_map(raw, checkpoint_path=None, checkpoint_every=1000, restart=Fal
                         database.executemany("INSERT INTO patches VALUES (?, ?, ?, ?)", pending)
                     pending.clear()
 
-            remaining = ((image, name) for image, name in zip(images, names) if name not in cached)
+            remaining = ((folder / name, name) for name in names if name not in cached)
             try:
-                with tqdm(total=len(images), initial=len(cached), desc=f"扫描 {cls}", unit="file") as progress:
+                with tqdm(total=len(names), initial=len(cached), desc=f"扫描 {cls}", unit="file") as progress:
                     for image, name in remaining:
                         resolved = image.resolve()
                         try:
@@ -326,4 +349,26 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    # -X faulthandler 还能捕获脚本导入依赖阶段的原生崩溃；这里另存运行阶段日志。
+    diagnostic_parser = argparse.ArgumentParser(add_help=False)
+    diagnostic_parser.add_argument("--root")
+    diagnostic_args, _ = diagnostic_parser.parse_known_args()
+    log_directory = config.paths(diagnostic_args.root)["stat"]
+    os.makedirs(log_directory, exist_ok=True)
+    crash_path = log_directory / "scan_crash.log"
+    with crash_path.open("a", encoding="utf-8") as crash_log:
+        crash_log.write(f"\nSTART {datetime.now().isoformat()} python={sys.executable} version={sys.version}\n")
+        crash_log.flush()
+        faulthandler.enable(file=crash_log, all_threads=True)
+        print(f"Python：{sys.executable}\n诊断日志：{crash_path}", flush=True)
+        try:
+            main()
+        except BaseException:
+            traceback.print_exc(file=crash_log)
+            crash_log.flush()
+            raise
+        else:
+            crash_log.write("COMPLETED\n")
+            crash_log.flush()
+        finally:
+            faulthandler.disable()
