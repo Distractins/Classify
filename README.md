@@ -119,6 +119,17 @@ python dataset_stat.py --import-legacy-map "output_legacy/stat/patch_patient_map
 
 ## 第二步：采样与划分
 
+### 当前环境崩溃时的标准库入口
+
+如果加载 pandas/NumPy 后出现 Illegal instruction、unknown opcode 等崩溃，可暂用下列入口直接复用旧映射，不安装依赖、不要求生成 output/stat/mapping.csv：
+
+```powershell
+python -X faulthandler -u wsi_subset_stdlib.py --select-slide-num 50 --dry-run
+python -X faulthandler -u wsi_subset_stdlib.py --select-slide-num 50
+```
+
+默认读取 output_legacy/stat/patch_patient_map.csv，也支持 `--map` 指定三列 slideID 新映射。只使用标准库及 utils/path_config.py，不读取临床表。先逐行核对文件名前缀，再枚举原图 PNG 文件清单检查增删（不解码、不重新绘图统计）；完整保留选中 WSI 的所有 patch，划分规则及 PAPER 输出与正式模式一致。dry-run 不写任何文件。正式复制中断会保留 .building，不支持逐图片断点，禁止覆盖已有输出。此入口绕开相关原生依赖，并不证明底层环境或硬件问题已修复；若仍崩溃，需要继续检查 Python 和机器稳定性。
+
 子集通过复制原图生成，原图不剪切、不修改。后续训练只读取生成的子集。采样前复扫八类文件清单并核对 mapping.csv，拒绝使用增图、缺图或编号变化后的过期映射。
 
 ### fast_mode：仅快速调试
