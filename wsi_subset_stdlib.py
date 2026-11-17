@@ -180,6 +180,8 @@ def main(argv=None):
     parser.add_argument("--root", help="临时覆盖根目录")
     parser.add_argument("--map", default="output/stat/legacy_patch_map.csv")
     parser.add_argument("--select-slide-num", type=int, default=50)
+    parser.add_argument("--all-slides", action="store_true", help="使用映射中的全部 WSI，输出独立 FULL 数据集")
+    parser.add_argument("--output-name", help="datasets 下的输出目录名，不覆盖已有数据集")
     parser.add_argument("--dry-run", action="store_true", help="仅验证和打印，保存断点但不复制图片")
     parser.add_argument("--recheck-files", action="store_true", help="原图发生变化时，重新核对八类文件清单")
     args = parser.parse_args(argv)
@@ -193,11 +195,20 @@ def main(argv=None):
         source, p["raw"], checkpoint, args.recheck_files)
     print("恢复期间请勿增删或修改原图；变化后必须加 --recheck-files。", flush=True)
     verify_files(p["raw"], expected, state, state_path)
-    plan, assignments = make_plan(rows, args.select_slide_num)
+    number = len({row[1] for row in rows}) if args.all_slides else args.select_slide_num
+    plan, assignments = make_plan(rows, number)
     if args.dry_run:
         print("预览成功：断点已保存，没有复制图片。", flush=True)
         return
     target = p["paper"]
+    if args.all_slides:
+        target = p["raw"].with_name(p["raw"].name + "-FULL")
+    if args.output_name:
+        if args.output_name in (".", "..") or any(c in args.output_name for c in ("/", "\\", ":")):
+            parser.error("output-name 必须是单个目录名")
+        target = p["root"] / "datasets" / args.output_name
+    if target.resolve() == p["raw"].resolve():
+        parser.error("输出目录不能是原图目录")
     staging = target.with_name(target.name + ".building")
     if target.exists():
         raise FileExistsError(f"拒绝覆盖已有最终数据集：{target}")

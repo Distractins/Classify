@@ -164,6 +164,38 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 
 ## 数据准备与可删除内容
 
+### 全量数据的独立实验
+
+无需重新统计：保留完整 `output/stat/legacy_patch_map.csv` 即可。原始八类目录必须仍在 datasets/HMU-CRC-Hist550K，脚本会核对映射与实际文件清单。先预览，再复制全部 WSI 并固定划分：
+
+```bat
+python -X faulthandler -u wsi_subset_stdlib.py --all-slides --recheck-files --dry-run
+python -X faulthandler -u wsi_subset_stdlib.py --all-slides
+```
+
+500 个 WSI 时对应 train/val/test=350/75/75；不是每类图片各自随机划分。输出 datasets/HMU-CRC-Hist550K-FULL，保留原 PAPER 子集和结果。该操作复制全部约 547,971 张 PNG，需要额外容纳一份全量数据的磁盘空间。断点保存、SHA256 校验及恢复规则同子集入口；中断重复第二条命令，不删除 FULL.building。--all-slides 优先于 --select-slide-num；可用 --output-name 指定另一个独立目录。
+
+建议先保持当前优化设置仅增大数据规模，观察 5 轮的收敛情况：
+
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model efficientnet_b0 --run-name full_adamw_lr1e4_5ep --epochs 5 --batch-size 8 --lr 0.0001 --weight-decay 0.00001 --smoke-test
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model efficientnet_b0 --run-name full_adamw_lr1e4_5ep --epochs 5 --batch-size 8 --lr 0.0001 --weight-decay 0.00001
+```
+
+用户提供的论文 CNN 参数可另开实验，不覆盖上面的控制组：
+
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model efficientnet_b0 --run-name full_paper_cnn_5ep --epochs 5 --batch-size 8 --lr 0.01 --weight-decay 0.0001
+```
+
+ResNet50/101 可替换 model，所有主干比较使用同一 FULL 划分。AdamW、lr=0.01、weight_decay=1e-4、5 epochs 仅匹配用户提供的部分设置，不代表完整论文复现；ImageNet 权重版本、batch size、划分、预处理和调度器均需核对。更高学习率不保证更好，应根据 val loss/F1 判断。
+
+UNI 若实验采用 lr=3e-4、weight_decay=0.05、5 epochs，可显式指定，但 UNI 是病理预训练 ViT，不能标注为论文 ImageNet ViT 的直接复现。预训练模型的迁移学习率可不同，需要记录差异。5 轮是训练预算，不保证所有主干收敛；不得只因原文使用 5 轮就断言已经最佳。
+
+续训在原命令末尾加 --resume，必须保持 lr/weight-decay/batch-size/workers 不变。已有旧格式新入口断点未记录 weight_decay 时按先前默认 1e-5 兼容，不可用更改优化器的方式伪装续训。子集与 FULL 的测试 WSI 不同，指标不能用于单独归因数据规模效果；若正式分析数据规模，应先固定同一个测试集，仅在训练池中取不同规模。
+
+本方案仍是 WSI 70/15/15 留出法，不是 patient-level 7:3，也不是 10 折交叉验证。缺少 slide–patient 映射不能声称复现患者级划分。10 折可作为后续独立且计算量约十倍的协议；若做最终测试集加交叉验证，交叉验证只能在 train+val 池内部，test 不参与选参。当前不生成或运行 10 折，避免将不兼容评估协议混在同一实验。
+
 保留 dataset_stat.py、dataset_sampling.py、wsi_subset_stdlib.py，已成功划分的数据训练时不用重建。标准库入口默认使用 output/stat/legacy_patch_map.csv，断点仍在 output/wsi_subset_checkpoint。恢复时保持原图不变，变化后加 --recheck-files。
 
 确认无需重建子集后可删除 output 中的扫描缓存；outputs/archive 另有备份后可手动删除。必须保留正式子集的三个集合及划分 CSV、需要比较的预训练权重，以及实验的 config/history/best/last。不要跨 Windows/Linux 拷贝虚拟环境。

@@ -178,13 +178,14 @@ def main(argv=None):
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--evaluate-test", action="store_true")
     parser.add_argument("--legacy-weights", help="Evaluate original server best.pth with ADI,LYM,DEB,... class order")
     args = parser.parse_args(argv)
-    if args.epochs < 1 or args.batch_size < 1 or args.lr <= 0 or args.workers < 0:
+    if args.epochs < 1 or args.batch_size < 1 or args.lr <= 0 or args.workers < 0 or args.weight_decay < 0:
         parser.error("epochs, batch-size and lr must be positive; workers must be nonnegative")
     if sum((args.resume, args.smoke_test, args.evaluate_test)) > 1:
         parser.error("resume, smoke-test and evaluate-test are mutually exclusive")
@@ -215,7 +216,7 @@ def main(argv=None):
     if not args.smoke_test:
         weights.mkdir(parents=True, exist_ok=True)
         reports.mkdir(parents=True, exist_ok=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     start, best, history = 0, -1.0, []
     if args.resume or args.evaluate_test:
         if args.legacy_weights:
@@ -230,8 +231,10 @@ def main(argv=None):
                 raise ValueError("Model, class order or dataset manifest differs from checkpoint")
             model.load_state_dict(state["model"])
             if args.resume:
-                if state["batch_size"] != args.batch_size or state["lr"] != args.lr or state["workers"] != args.workers:
-                    raise ValueError("Resume requires the same batch-size, lr and workers")
+                if (state["batch_size"] != args.batch_size or state["lr"] != args.lr
+                        or state["workers"] != args.workers
+                        or state.get("weight_decay", 1e-5) != args.weight_decay):
+                    raise ValueError("Resume requires the same batch-size, lr, weight-decay and workers")
                 optimizer.load_state_dict(state["optimizer"])
                 torch.set_rng_state(state["torch_rng"])
                 random.setstate(state["python_rng"])
@@ -271,6 +274,7 @@ def main(argv=None):
             "model_name": args.model, "epoch": epoch + 1, "best": best,
             "classes": list(CLASSES), "fingerprint": fingerprint,
             "batch_size": args.batch_size, "lr": args.lr, "workers": args.workers,
+            "weight_decay": args.weight_decay,
             "history": history, "torch_rng": torch.get_rng_state(),
             "numpy_rng": np.random.get_state(), "python_rng": random.getstate(),
             "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}

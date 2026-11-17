@@ -73,6 +73,19 @@ class StdlibSubsetTests(unittest.TestCase):
         self.assertNotEqual(self.run_script("--dry-run").returncode, 0)
         self.assertFalse(self.p["paper"].exists())
 
+    def test_all_slides_separate_output(self):
+        result = self.run_script("--all-slides")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        full = self.p["raw"].with_name(self.p["raw"].name + "-FULL")
+        with (full / "split_mapping.csv").open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), len(self.rows))
+        self.assertEqual(len({r["slideID"] for r in rows}), 20)
+        groups = {s: {r["slideID"] for r in rows if r["split"] == s} for s in ("train", "val", "test")}
+        self.assertEqual([len(groups[s]) for s in ("train", "val", "test")], [14,3,3])
+        self.assertFalse(groups["train"] & groups["test"])
+        self.assertFalse(self.p["paper"].exists())
+
     def test_resume_skips_csv_and_completed_classes(self):
         self.assertEqual(self.run_script("--dry-run").returncode, 0)
         cache = self.root / "output/wsi_subset_checkpoint"
