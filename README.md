@@ -96,7 +96,7 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 outputs/experiments/<model>/<run-name>/
   config.json
   weights/best.pth         # val macro-F1 最佳的完整断点
-  weights/last.pth         # 最后完成一轮的完整断点
+  weights/last.pth         # 最近训练批次或完整轮次的恢复断点
   reports/history.csv
   reports/loss_curve.png
   reports/accuracy_curve.png
@@ -107,13 +107,15 @@ outputs/experiments/<model>/<run-name>/
   reports/best_val_confusion_matrix.png
 ```
 
-每轮结束原子保存权重和完整历史，再更新曲线。恢复例子：
+默认每 200 个训练 batch 原子保存 last.pth（`--save-every-batches 200`），训练轮次开始前和最后一批后也保存。记录模型、优化器、下一批位置、该轮累计 loss/混淆矩阵及随机状态。固定每轮 shuffle 顺序，恢复直接读取剩余图片，不重新训练已保存的批次。每轮验证完成后保存整轮历史并更新曲线；best.pth 仍只按验证 macro-F1 选择。恢复例子：
 
 ```bat
 python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model resnet50 --run-name baseline --epochs 20 --batch-size 8 --resume
 ```
 
-未完成的一轮重跑；epochs 为目标总轮数。model、run-name、batch-size、lr、workers 必须与断点一致。保存优化器、随机状态、类别和文件清单指纹（路径、标签、大小；不是逐图内容校验）。默认 workers=0，跨硬件不保证数值完全相同。读图失败会明确报错，不再用黑图替代。
+批次恢复需 workers=0（默认）；多进程预取的随机增强状态没有保存，所以 workers>0 时必须用 `--save-every-batches 0`，仅整轮保存。epochs 为目标总轮数。model、run-name、batch-size、lr、weight-decay、workers 必须与断点一致，保存间隔可改。一般训练中断最多重做当前保存间隔内未提交的批次；验证中断会重新验证，但训练已保存完成则无需重训。旧整轮断点仍可读取，但此前没有保存的批次不能追溯恢复。磁盘需容纳原文件和临时断点两份，保存频率越高磁盘开销越大。非法内存访问或硬件问题仍可能破坏计算，断点不能修复其根因。
+
+保存类别和文件清单指纹（路径、标签、大小；不是逐图内容校验）。默认 workers=0，跨硬件不保证数值完全相同。读图失败会明确报错，不再用黑图替代。
 
 旧服务器 checkpoint 缺少完整配置及随机状态，且 best_f1 保存顺序落后一轮。新脚本不直接续训旧断点，保留旧脚本备份在 outputs/archive/retired_patient_msi_code.zip。新实验从预训练权重开始，按新格式续训；旧训练结果原样保留。
 

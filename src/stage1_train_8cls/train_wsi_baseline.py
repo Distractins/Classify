@@ -127,10 +127,16 @@ def build_model(name, project, pretrained=True, weight_override=None):
     return model
 
 
-def run_epoch(model, loader, device, optimizer=None, limit=0, collect_predictions=False):
+def run_epoch(model, loader, device, optimizer=None, limit=0, collect_predictions=False,
+              progress=None, checkpoint_callback=None, save_every=200):
     model.train(optimizer is not None)
     total, loss_sum, correct = 0, 0.0, 0
     matrix = torch.zeros((8, 8), dtype=torch.int64)
+    batch_cursor = 0
+    if progress:
+        total, loss_sum, correct = progress["total"], progress["loss_sum"], progress["correct"]
+        matrix = progress["matrix"].clone()
+        batch_cursor = progress["batch_cursor"]
     targets, probabilities = [], []
     with torch.set_grad_enabled(optimizer is not None):
         for step, (images, labels) in enumerate(tqdm(loader, desc="train" if optimizer else "eval")):
@@ -152,6 +158,11 @@ def run_epoch(model, loader, device, optimizer=None, limit=0, collect_prediction
             correct += (predictions == labels).sum().item()
             loss_sum += loss.item() * labels.numel()
             matrix += torch.bincount((labels * 8 + predictions).cpu(), minlength=64).reshape(8, 8)
+            if checkpoint_callback is not None:
+                current = {"total": total, "loss_sum": loss_sum, "correct": correct,
+                           "matrix": matrix.clone(), "batch_cursor": batch_cursor + step + 1}
+                if (step + 1 == len(loader)) or (save_every and current["batch_cursor"] % save_every == 0):
+                    checkpoint_callback(current)
             if limit and step + 1 >= limit:
                 break
     f1 = 2 * matrix.diag().float() / (matrix.sum(0) + matrix.sum(1)).clamp_min(1)
@@ -180,6 +191,8 @@ def main(argv=None):
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--save-every-batches", type=int, default=200,
+                        help="Save last.pth every N completed training batches; 0 means epoch checkpoints only")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--evaluate-test", action="store_true")
@@ -191,6 +204,8 @@ def main(argv=None):
         parser.error("resume, smoke-test and evaluate-test are mutually exclusive")
     if args.legacy_weights and (not args.evaluate_test or args.model != "efficientnet_b0"):
         parser.error("legacy-weights requires efficientnet_b0 and evaluate-test")
+    if args.save_every_batches < 0 or (args.save_every_batches and args.workers != 0):
+        parser.error("Batch resume requires workers=0; use save-every-batches=0 for multi-worker epoch resume")
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -217,7 +232,7 @@ def main(argv=None):
         weights.mkdir(parents=True, exist_ok=True)
         reports.mkdir(parents=True, exist_ok=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    start, best, history = 0, -1.0, []
+    start, best, history, pending = 0, -1.0, [], None
     if args.resume or args.evaluate_test:
         if args.legacy_weights:
             path = Path(args.legacy_weights)
@@ -242,9 +257,22 @@ def main(argv=None):
                 if device.type == "cuda" and state["cuda_rng"] is not None:
                     torch.cuda.set_rng_state_all(state["cuda_rng"])
                 start, best, history = state["epoch"], state["best"], state["history"]
-    loaders = {split: DataLoader(ds, batch_size=args.batch_size, shuffle=split == "train",
-                                num_workers=args.workers, pin_memory=device.type == "cuda")
+                pending = state.get("train_progress")
+                if pending:
+                    print(f"Resume epoch {start + 1}, next training batch {pending['batch_cursor'] + 1}", flush=True)
+    loaders = {split: DataLoader(ds, batch_size=args.batch_size, shuffle=False,
+                                num_workers=args.workers, pin_memory=device.type == "cuda",
+                                generator=torch.Generator().manual_seed(SEED))
                for split, ds in data.items()}
+    def checkpoint_state(epoch, train_progress=None):
+        return {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "model_name": args.model, "epoch": epoch, "best": best,
+            "classes": list(CLASSES), "fingerprint": fingerprint,
+            "batch_size": args.batch_size, "lr": args.lr, "workers": args.workers,
+            "weight_decay": args.weight_decay, "train_progress": train_progress,
+            "history": history, "torch_rng": torch.get_rng_state(),
+            "numpy_rng": np.random.get_state(), "python_rng": random.getstate(),
+            "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}
     if not args.smoke_test and not args.evaluate_test:
         (output / "config.json").write_text(json.dumps({**vars(args), "classes": CLASSES,
             "seed": SEED, "dataset_fingerprint": fingerprint, "selection": "val_macro_f1"},
@@ -257,7 +285,24 @@ def main(argv=None):
         print("test:", scores)
         return
     for epoch in range(start, start + 1 if args.smoke_test else args.epochs):
-        train, _ = run_epoch(model, loaders["train"], device, optimizer, 2 if args.smoke_test else 0)
+        # Independent epoch permutation and DataLoader RNG avoid consuming restored augmentation/dropout RNG.
+        order = torch.randperm(len(data["train"]), generator=torch.Generator().manual_seed(SEED + epoch)).tolist()
+        cursor = pending["batch_cursor"] if pending else 0
+        train_loader = DataLoader(data["train"], batch_size=args.batch_size,
+            sampler=order[cursor * args.batch_size:], num_workers=args.workers,
+            pin_memory=device.type == "cuda", generator=torch.Generator().manual_seed(SEED + epoch))
+        callback = None
+        if not args.smoke_test and args.save_every_batches:
+            def callback(progress):
+                atomic_save(checkpoint_state(epoch, progress), last)
+                print(f"Checkpoint saved: epoch {epoch + 1}, batch {progress['batch_cursor']}", flush=True)
+            if pending is None:
+                initial = {"total": 0, "loss_sum": 0.0, "correct": 0,
+                           "matrix": torch.zeros((8, 8), dtype=torch.int64), "batch_cursor": 0}
+                atomic_save(checkpoint_state(epoch, initial), last)
+        train, _ = run_epoch(model, train_loader, device, optimizer, 2 if args.smoke_test else 0,
+                             progress=pending, checkpoint_callback=callback, save_every=args.save_every_batches)
+        pending = None
         val, matrix, predictions = run_epoch(model, loaders["val"], device,
                                              limit=2 if args.smoke_test else 0, collect_predictions=True)
         print(f"epoch={epoch + 1} train={train} val={val}", flush=True)
@@ -270,14 +315,7 @@ def main(argv=None):
         history.append(row)
         improved = val["macro_f1"] > best
         best = max(best, val["macro_f1"])
-        state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
-            "model_name": args.model, "epoch": epoch + 1, "best": best,
-            "classes": list(CLASSES), "fingerprint": fingerprint,
-            "batch_size": args.batch_size, "lr": args.lr, "workers": args.workers,
-            "weight_decay": args.weight_decay,
-            "history": history, "torch_rng": torch.get_rng_state(),
-            "numpy_rng": np.random.get_state(), "python_rng": random.getstate(),
-            "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}
+        state = checkpoint_state(epoch + 1)
         if improved:
             atomic_save(state, best_path)
         atomic_save(state, last)

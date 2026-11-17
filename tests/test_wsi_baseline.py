@@ -78,6 +78,38 @@ class BaselineTests(unittest.TestCase):
                 baseline.main(args + ["--evaluate-test"])
                 self.assertTrue((output / "reports/test_confusion_matrix.png").is_file())
 
+    def test_mid_epoch_resume_matches_uninterrupted_training(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            project = Path(temporary)
+            root = project / "dataset"
+            for index, split in enumerate(("train", "val", "test")):
+                for cls in baseline.CLASSES:
+                    folder = root / split / cls
+                    folder.mkdir(parents=True)
+                    Image.new("RGB", (8, 8), color=(index * 30, 50, 100)).save(folder / f"{index}_1_2_{cls}.png")
+            def tiny(*args):
+                return torch.nn.Sequential(torch.nn.AdaptiveAvgPool2d(1), torch.nn.Flatten(),
+                                           torch.nn.Dropout(.3), torch.nn.Linear(3, 8))
+            args = ["--root", str(root), "--project-root", str(project), "--batch-size", "2",
+                    "--epochs", "1", "--save-every-batches", "1"]
+            save = baseline.atomic_save
+            def interrupted(value, path):
+                save(value, path)
+                if value.get("train_progress") and value["train_progress"]["batch_cursor"] == 2:
+                    raise RuntimeError("simulated batch interruption")
+            with patch.object(baseline, "build_model", side_effect=tiny), contextlib.redirect_stdout(io.StringIO()):
+                baseline.main(args + ["--run-name", "continuous"])
+                with patch.object(baseline, "atomic_save", side_effect=interrupted):
+                    with self.assertRaisesRegex(RuntimeError, "batch interruption"):
+                        baseline.main(args + ["--run-name", "resumed"])
+                baseline.main(args + ["--run-name", "resumed", "--resume"])
+            base = project / "outputs/experiments/efficientnet_b0"
+            first = baseline.load_checkpoint(base / "continuous/weights/last.pth")
+            second = baseline.load_checkpoint(base / "resumed/weights/last.pth")
+            for key in first["model"]:
+                torch.testing.assert_close(first["model"][key], second["model"][key], rtol=0, atol=0)
+            self.assertEqual(first["history"], second["history"])
+
 
 if __name__ == "__main__":
     unittest.main()
