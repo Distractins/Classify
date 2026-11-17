@@ -1,6 +1,7 @@
 """EfficientNet-B0：复用 WSI 目录划分，不读取临床表。"""
 import argparse
 import csv
+import os
 import random
 import sys
 from pathlib import Path
@@ -39,16 +40,24 @@ def load_data(root):
         transforms.RandomVerticalFlip(), transforms.ToTensor(), normalize,
     ])
     result, groups, manifest = {}, {}, []
+    root_string = os.path.abspath(os.fspath(root))
     for split in ("train", "val", "test"):
+        print(f"{split}: 正在枚举 PNG 文件……", flush=True)
         result[split] = datasets.ImageFolder(
             root / split, transform=training if split == "train" else evaluation,
             is_valid_file=lambda name: name.lower().endswith(".png"))
         if tuple(result[split].classes) != CLASSES:
             raise ValueError(f"{split} 必须包含固定八类目录")
         groups[split] = set()
-        for filename, label in result[split].samples:
-            groups[split].add(config.parse_slide_id(Path(filename).name, CLASSES[label]))
-            manifest.append((Path(filename).relative_to(root).as_posix(), label))
+        print(f"{split}: 枚举完成，开始核对 {len(result[split])} 张图片的 slideID……", flush=True)
+        for index, (filename, label) in enumerate(result[split].samples, 1):
+            relative = os.path.relpath(filename, root_string).replace("\\", "/")
+            if relative.startswith("../") or not relative.startswith(split + "/"):
+                raise ValueError(f"图片路径超出指定集合：{filename}")
+            groups[split].add(config.parse_slide_id(relative.rsplit("/", 1)[-1], CLASSES[label]))
+            manifest.append((relative, label))
+            if index % 10000 == 0:
+                print(f"{split}: 已核对 {index:,}/{len(result[split]):,}", flush=True)
         print(f"{split}: {len(result[split])} patches / {len(groups[split])} slides", flush=True)
     if any(groups[a] & groups[b] for a, b in (("train", "val"), ("train", "test"), ("val", "test"))):
         raise ValueError("检测到 slideID 跨集合，拒绝训练")

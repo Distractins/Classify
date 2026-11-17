@@ -31,7 +31,10 @@ def prepare_plotting(root=None):
 
 def parse_slide_id(filename, expected_class):
     """首段为 slideID，保留前导零；允许重复的同类后缀。"""
-    parts = Path(filename).stem.split("_")
+    # 批量处理仅做字符串解析，避免每张图片重复创建 Path。
+    name = str(filename).replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    parts = stem.split("_")
     end = len(parts)
     while end and parts[end - 1] in CLASSES:
         end -= 1

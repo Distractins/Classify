@@ -13,6 +13,11 @@ import train_wsi_baseline as baseline
 
 
 class BaselineTests(unittest.TestCase):
+    def test_string_parser_preserves_id_and_checks_class(self):
+        self.assertEqual(baseline.config.parse_slide_id(r"ADI\00123_1_2_ADI_ADI.png", "ADI"), "00123")
+        with self.assertRaises(ValueError):
+            baseline.config.parse_slide_id("00123_1_2_TUM.png", "ADI")
+
     def test_loader_checks_disjoint_wsi(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             root = Path(temporary)
