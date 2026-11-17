@@ -5,10 +5,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import contextlib
+import io
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from utils import path_config as config
+import wsi_subset_stdlib as subset
 
 
 class StdlibSubsetTests(unittest.TestCase):
@@ -68,6 +72,38 @@ class StdlibSubsetTests(unittest.TestCase):
         self.write_source()
         self.assertNotEqual(self.run_script("--dry-run").returncode, 0)
         self.assertFalse(self.p["paper"].exists())
+
+    def test_resume_skips_csv_and_completed_classes(self):
+        self.assertEqual(self.run_script("--dry-run").returncode, 0)
+        cache = self.root / "output/wsi_subset_checkpoint"
+        with patch.object(subset, "read_legacy", side_effect=AssertionError("CSV must be cached")):
+            rows, expected, state, path = subset.load_checkpoint(self.source, self.p["raw"], cache)
+        with patch.object(subset.os, "walk", side_effect=AssertionError("classes must be cached")):
+            subset.verify_files(self.p["raw"], expected, state, path)
+        (self.p["raw"] / "ADI/00000_99_100_ADI.png").write_bytes(b"new")
+        self.assertNotEqual(self.run_script("--dry-run", "--recheck-files").returncode, 0)
+
+    def test_copy_interruption_resumes_and_repairs_bad_copy(self):
+        args = ["--root", str(self.root), "--select-slide-num", "10"]
+        original_copy = subset.shutil.copy2
+        calls = []
+        def interrupt(source, target):
+            calls.append(target)
+            if len(calls) == 2:
+                raise RuntimeError("simulated interruption")
+            return original_copy(source, target)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(subset.shutil, "copy2", side_effect=interrupt):
+                with self.assertRaisesRegex(RuntimeError, "interruption"):
+                    subset.main(args)
+        self.assertFalse(self.p["paper"].exists())
+        staging = self.p["paper"].with_name(self.p["paper"].name + ".building")
+        copied = next(staging.rglob("*.png"))
+        copied.write_bytes(b"bad")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for image in self.p["paper"].rglob("*.png"):
+            self.assertEqual(image.read_bytes(), b"unchanged-original")
 
     def test_new_png_rejected(self):
         (self.p["raw"] / "ADI/00000_99_100_ADI.png").write_bytes(b"new")

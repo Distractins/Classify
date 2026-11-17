@@ -128,7 +128,13 @@ python -X faulthandler -u wsi_subset_stdlib.py --select-slide-num 50 --dry-run
 python -X faulthandler -u wsi_subset_stdlib.py --select-slide-num 50
 ```
 
-默认读取 output_legacy/stat/patch_patient_map.csv，也支持 `--map` 指定三列 slideID 新映射。只使用标准库及 utils/path_config.py，不读取临床表。先逐行核对文件名前缀，再枚举原图 PNG 文件清单检查增删（不解码、不重新绘图统计）；完整保留选中 WSI 的所有 patch，划分规则及 PAPER 输出与正式模式一致。dry-run 不写任何文件。正式复制中断会保留 .building，不支持逐图片断点，禁止覆盖已有输出。此入口绕开相关原生依赖，并不证明底层环境或硬件问题已修复；若仍崩溃，需要继续检查 Python 和机器稳定性。
+默认读取 output_legacy/stat/patch_patient_map.csv，也支持 `--map` 指定三列 slideID 新映射。只使用标准库及 utils/path_config.py，不读取临床表。先逐行核对文件名前缀，再枚举原图 PNG 文件清单检查增删（不解码、不重新绘图统计）；完整保留选中 WSI 的所有 patch，划分规则及 PAPER 输出与正式模式一致。
+
+断点位于 `output/wsi_subset_checkpoint/`：CSV 完整校验后保存映射缓存，每完成一个类别立即保存核对进度。中断后重复同一命令即可跳过这些已完成步骤；CSV 尚未完整校验或类别尚未完成时，需要重做该步骤。每次恢复仍读取已验证缓存并重新计算确定性的 WSI 分配。dry-run 保存断点但不复制图片。旧 CSV、根路径或解析配置发生变化会使缓存失效。
+
+恢复期间原图必须保持不变。若增删或修改原图，运行时加 `--recheck-files` 重新核对全部类别；缓存不是磁盘实时扫描结果。正式复制中断后再次运行相同参数，会验证 .building 的数据和计划标识，再对已有副本与原图计算 SHA256，匹配则跳过、不匹配则重复制；每张图片通过临时文件原子替换。禁止覆盖已有最终数据集或复用不同计划的半成品。不同参数可以复用扫描缓存，但不能复用旧计划的 .building。
+
+此入口及断点不能修复 access violation、unknown opcode 或硬件问题，也不能保证异常机器上的结果可靠；若仍崩溃，需要继续检查 Python 和机器稳定性。CSV／断点不要删除，旧版首次执行尚未写入的新断点无法追溯恢复。
 
 子集通过复制原图生成，原图不剪切、不修改。后续训练只读取生成的子集。采样前复扫八类文件清单并核对 mapping.csv，拒绝使用增图、缺图或编号变化后的过期映射。
 
