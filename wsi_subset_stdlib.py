@@ -172,13 +172,56 @@ def write_csv(target, header, rows):
     temporary.replace(target)
 
 
+def resolve_mapping(p, requested=None):
+    if requested:
+        source = Path(requested)
+        if not source.is_absolute():
+            source = p["root"] / source
+        if not source.is_file():
+            raise FileNotFoundError(f"指定映射不存在：{source}")
+        return source
+    for relative in ("output/stat/legacy_patch_map.csv",
+                     "output_legacy/stat/patch_patient_map.csv",
+                     "output/stat/patch_patient_map.csv", "output/stat/mapping.csv"):
+        source = p["root"] / relative
+        if source.is_file():
+            return source
+    print("没有找到已有全量映射，扫描原始八类目录生成新映射（不解码图片）。", flush=True)
+    rows = []
+    for cls in CLASSES:
+        folder = p["raw"] / cls
+        if not folder.is_dir() or folder.is_symlink():
+            raise FileNotFoundError(f"原始类别目录缺失或是符号链接：{folder}")
+        count = 0
+        for current, dirs, files in os.walk(folder, followlinks=False):
+            dirs.sort()
+            if any(os.path.islink(os.path.join(current, name)) for name in dirs):
+                raise ValueError(f"不支持符号链接目录：{current}")
+            for name in sorted(files):
+                if not name.lower().endswith(".png"):
+                    continue
+                filename = os.path.join(current, name)
+                if os.path.islink(filename) or not os.path.isfile(filename):
+                    raise ValueError(f"异常图片路径：{filename}")
+                relative = os.path.relpath(filename, folder).replace("\\", "/")
+                rows.append((relative, config.parse_slide_id(name, cls), cls))
+                count += 1
+        if not count:
+            raise ValueError(f"类别中没有 PNG：{folder}")
+        print(f"生成映射 {cls}：{count:,} 张", flush=True)
+    source = p["stat"] / "mapping.csv"
+    write_csv(source, ["img_name", "slideID", "cls"], rows)
+    print(f"全量映射已保存：{source}", flush=True)
+    return source
+
+
 def main(argv=None):
     # Windows GBK 终端可能无法输出数据目录里的 U+2011 连字符。
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="临时覆盖根目录")
-    parser.add_argument("--map", default="output/stat/legacy_patch_map.csv")
+    parser.add_argument("--map", help="指定完整映射；默认自动查找，缺失时从原图生成")
     parser.add_argument("--select-slide-num", type=int, default=50)
     parser.add_argument("--all-slides", action="store_true", help="使用映射中的全部 WSI，输出独立 FULL 数据集")
     parser.add_argument("--output-name", help="datasets 下的输出目录名，不覆盖已有数据集")
@@ -186,9 +229,7 @@ def main(argv=None):
     parser.add_argument("--recheck-files", action="store_true", help="原图发生变化时，重新核对八类文件清单")
     args = parser.parse_args(argv)
     p = config.paths(args.root)
-    source = Path(args.map)
-    if not source.is_absolute():
-        source = p["root"] / source
+    source = resolve_mapping(p, args.map)
     print(f"读取映射：{source}（不加载 pandas/NumPy）", flush=True)
     checkpoint = p["root"] / "output" / "wsi_subset_checkpoint"
     rows, expected, state, state_path = load_checkpoint(

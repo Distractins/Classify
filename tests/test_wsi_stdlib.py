@@ -86,6 +86,16 @@ class StdlibSubsetTests(unittest.TestCase):
         self.assertFalse(groups["train"] & groups["test"])
         self.assertFalse(self.p["paper"].exists())
 
+    def test_missing_map_generated_from_full_raw_data(self):
+        self.source.unlink()
+        result = self.run_script("--all-slides", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with (self.p["stat"] / "mapping.csv").open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), len(self.rows))
+        self.assertEqual(len({r["slideID"] for r in rows}), 20)
+        self.assertFalse(self.p["paper"].exists())
+
     def test_resume_skips_csv_and_completed_classes(self):
         self.assertEqual(self.run_script("--dry-run").returncode, 0)
         cache = self.root / "output/wsi_subset_checkpoint"

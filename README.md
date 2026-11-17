@@ -166,7 +166,7 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 
 ### 全量数据的独立实验
 
-无需重新统计：保留完整 `output/stat/legacy_patch_map.csv` 即可。原始八类目录必须仍在 datasets/HMU-CRC-Hist550K，脚本会核对映射与实际文件清单。先预览，再复制全部 WSI 并固定划分：
+优先复用完整映射：脚本依次查找 output/stat/legacy_patch_map.csv、output_legacy/stat/patch_patient_map.csv、output/stat/patch_patient_map.csv、output/stat/mapping.csv。都不存在时，自动从原始八类 PNG 文件名生成 output/stat/mapping.csv，不需要 pandas、不读取临床表、不解码图片。显式 --map 指定的文件缺失则报错，不自动改用其他文件。原始八类目录必须仍在 datasets/HMU-CRC-Hist550K，脚本会核对映射与实际文件清单，不能用 PAPER 子集映射冒充全集。首次生成映射中断需重新枚举，成功保存后可继续使用后续校验/复制断点。先预览，再复制全部 WSI 并固定划分：
 
 ```bat
 python -X faulthandler -u wsi_subset_stdlib.py --all-slides --recheck-files --dry-run
