@@ -185,6 +185,26 @@ python dataset_sampling.py --mode paper_mode --select-slide-num 50
 
 Linux 示例为 `ROOT = Path(r"/data/Classify")`；也可用脚本的 `--root` 临时覆盖。数据准备仅用 CPU 和磁盘，无需 GPU。
 
+## EfficientNet-B0 基线入口
+
+数据准备完成后可使用 `src/stage1_train_8cls/train_wsi_baseline.py`。这属于可选后续训练步骤，需另有匹配 CUDA 的 torch、torchvision；不使用旧的患者训练入口。读取 PAPER 的既定三集合并核对 WSI 互斥，不读临床表。ImageNet 权重放在项目 `pretrained/efficientnet_b0_rwightman-3dd342df.pth`（也接受 7f5810bc 文件名），不联网下载。
+
+```powershell
+python src/stage1_train_8cls/train_wsi_baseline.py --batch-size 32 --smoke-test
+python src/stage1_train_8cls/train_wsi_baseline.py --epochs 20 --batch-size 32
+python src/stage1_train_8cls/train_wsi_baseline.py --epochs 20 --batch-size 32 --resume
+```
+
+smoke-test 仅训练与验证各两批，不保存正式权重；正式训练每个完整 epoch 原子保存 last.pth，验证 macro-F1 改善时保存 best.pth。目录为 `outputs/weights/stage1_8cls/efficientnet_wsi/`。--resume 从最后完成的 epoch 恢复，未完成 epoch 重跑；batch-size 和 lr 必须保持一致，epochs 为目标总轮数。num_workers=0 适用于 Windows，CUDA 可用时使用 GPU。
+
+调参完成后单独评估一次测试集：
+
+```powershell
+python src/stage1_train_8cls/train_wsi_baseline.py --batch-size 32 --evaluate-test
+```
+
+测试不参与模型选择，结果输出到 `outputs/figures/stage1_8cls/efficientnet_wsi/` 的 test_metrics.csv 与 test_confusion_matrix.csv（此入口暂不绘图）。固定随机种子不保证不同硬件上数值完全一致；先完成试跑，再进行正式实验。
+
 ## 论文方法描述
 
 “本研究以全切片图像 WSI（slideID）为划分最小单元，固定随机种子选择子集，保留所选 WSI 的全部已发布 patch，按约 7:1.5:1.5 划分训练、验证和测试集。同一 WSI 的样本仅属于一个集合，避免同一切片跨集合导致的染色风格及局部图像信息泄露。”
