@@ -21,7 +21,7 @@ class StdlibSubsetTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.p = config.paths(self.root)
-        self.source = self.root / "output_legacy/stat/patch_patient_map.csv"
+        self.source = self.root / "output/stat/legacy_patch_map.csv"
         self.source.parent.mkdir(parents=True)
         self.rows = []
         for cls in config.CLASSES:
@@ -49,7 +49,7 @@ class StdlibSubsetTests(unittest.TestCase):
         preview = self.run_script("--dry-run")
         self.assertEqual(preview.returncode, 0, preview.stderr)
         self.assertFalse(self.p["paper"].exists())
-        self.assertFalse(self.p["stat"].exists())
+        self.assertFalse((self.p["stat"] / "mapping.csv").exists())
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         with (self.p["paper"] / "split_mapping.csv").open(encoding="utf-8-sig", newline="") as handle:

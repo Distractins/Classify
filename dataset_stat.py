@@ -119,9 +119,11 @@ def main(argv=None):
     save_csv(slides.reset_index(), p["stat"] / "slide_patch_counts.csv")
     config.prepare_plotting(args.root)
     import matplotlib.pyplot as plt
+    from utils.plot_style import configure_chinese_font
+    configure_chinese_font()
     fig, ax = plt.subplots(figsize=(9, 5))
     counts.plot.bar(ax=ax, color="steelblue", rot=0)
-    ax.set(xlabel="Tissue class", ylabel="PNG patch count", title="HMU-CRC-Hist550K")
+    ax.set(xlabel="组织类别", ylabel="Patch 数量", title="HMU-CRC-Hist550K 各组织类别样本数量")
     fig.tight_layout()
     fig.savefig(p["stat"] / "class_patch_counts.png", dpi=180)
     plt.close(fig)

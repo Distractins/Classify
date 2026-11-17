@@ -178,7 +178,7 @@ def main(argv=None):
         sys.stdout.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="临时覆盖根目录")
-    parser.add_argument("--map", default="output_legacy/stat/patch_patient_map.csv")
+    parser.add_argument("--map", default="output/stat/legacy_patch_map.csv")
     parser.add_argument("--select-slide-num", type=int, default=50)
     parser.add_argument("--dry-run", action="store_true", help="仅验证和打印，保存断点但不复制图片")
     parser.add_argument("--recheck-files", action="store_true", help="原图发生变化时，重新核对八类文件清单")

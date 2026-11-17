@@ -1,212 +1,169 @@
-# HMU‑CRC‑Hist550K：Patch 级八分类数据准备
+# HMU-CRC-Hist550K：WSI 分组的 Patch 八分类
 
-本项目仅开展 ADI、DEB、LYM、MUC、MUS、NORM、STR、TUM 八类组织的 patch 分类实验。因缺少公开的 slide–patient 对照关系，放弃患者级 MSI 预测。本流程不读取、不复制、不使用临床 Excel，不包含训练模型代码。
+仅做八类组织分类，不做患者 MSI 预测，不读取临床 Excel。slideID 为文件名首段，不代表患者编号；同一 WSI 不跨 train/val/test。WSI 隔离不能替代患者级隔离。
 
 <AI_META>
-project_name: HMU-CRC-Hist550K patch 8-class classification
-current_scope: statistics, sampling, WSI dataset splitting
-classes: [ADI, DEB, LYM, MUC, MUS, NORM, STR, TUM]
-group_id: slideID = filename.split("_")[0], preserved as string
-patient_id: unavailable; never infer from slideID
-clinical_excel: unused; no MSI task
+task: patch eight-class classification only
+checkpoint_class_order: [ADI, LYM, DEB, MUC, MUS, NORM, STR, TUM]
+split_unit: slideID as string
 seed: 42
-fast_mode: per-class patch sampling for debugging only; no formal split
-paper_mode: select WSI groups, retain all PNG patches, split WSI groups 70/15/15
-critical_constraint: paper_mode train/val/test slideID sets must be disjoint
-paths: utils/path_config.py
+clinical_excel: unused
+selection: validation macro-F1; test only after model selection
+entry: src/stage1_train_8cls/train_wsi_baseline.py
+root_argument: PAPER dataset directory, NOT project directory
+output: outputs/experiments/MODEL/RUN_NAME
 </AI_META>
 
-## 目录结构
+## 保留的目录与历史结果
 
 ```text
-Classify/
-├── dataset_stat.py
-├── dataset_sampling.py
-├── utils/path_config.py
-├── datasets/
-│   ├── HMU‑CRC‑Hist550K/             # 原始目录，只读
-│   │   ├── ADI/ DEB/ LYM/ MUC/ MUS/ NORM/ STR/ TUM/
-│   │   └── HMU-CRC-Clinical.xlsx     # 不读取
-│   ├── HMU‑CRC‑Hist550K-FAST/        # 调试子集
-│   │   ├── ADI/ ... TUM/
-│   │   ├── mapping.csv
-│   │   ├── split_mapping.csv
-│   │   └── slide_splits.csv
-│   └── HMU‑CRC‑Hist550K-PAPER/       # 正式 WSI 子集
-│       ├── train/                  # 八类目录及 mapping.csv
-│       ├── val/                    # 同上
-│       ├── test/                   # 同上
-│       ├── mapping.csv
-│       ├── split_mapping.csv
-│       └── slide_splits.csv
-└── output/
-    ├── stat/
-    │   ├── slide_scan_cache/        # 逐类别映射缓存
-    │   ├── mapping.csv
-    │   ├── class_patch_counts.csv
-    │   ├── slide_patch_counts.csv
-    │   └── class_patch_counts.png
-    └── .matplotlib/
+datasets/HMU-CRC-Hist550K-PAPER/
+  train/ADI ... TUM/
+  val/ADI ... TUM/
+  test/ADI ... TUM/
+  mapping.csv / split_mapping.csv / slide_splits.csv
+pretrained/                  # 输入：下载的预训练权重
+src/stage1_train_8cls/train_wsi_baseline.py
+src/experiment_reports.py
+utils/path_config.py
+output/stat/                 # 数据准备结果
+outputs/
+  experiments/
+    efficientnet_b0/legacy_baseline/   # 已完成的服务器基线
+    efficientnet_b0/baseline/          # 新实验
+    resnet50/baseline/
+    resnet101/baseline/
+    uni/baseline/
+  archive/                   # 早期权重、旧报告和退役代码
 ```
 
-原有 data_explore.py、patient_stratified_sampling.py 和患者/MSI 脚本属于旧流程，不再使用；旧路径配置接口已退出本流程。新脚本不依赖旧 SQLite 断点，不删除原始数据或历史报告。
+`output`（单数）只放数据准备结果；`outputs/experiments` 放各个训练实验。原 `output/weights` 和 `output/figures` 已迁到 `outputs/experiments/efficientnet_b0/legacy_baseline/weights` 与 `reports`。原 `outputs/weights/stage1_8cls/efficientnet_wsi` 单独归档，不混入已完成基线。
 
-## 环境与路径
+`output_legacy` 已清理：完整图片映射保留为 `output/stat/legacy_patch_map.csv`，类别数量表/图也保留。小报告、退役代码备份在 outputs/archive；旧扫描 SQLite、崩溃日志、重复扫描缓存已移除。原图、已划分子集及预训练/训练权重没有删除。当前本地 datasets 未发现图片，需要同步服务器 PAPER 数据集才能本地训练。
 
-Python 3.8 或更新版本。仅需安装 pandas、matplotlib、tqdm；其余依赖为标准库。不需要 torch、CUDA、模型权重或 Excel 读取库。
+用户报告 EfficientNet-B0 约 0.78，需要区分验证 accuracy、验证 macro-F1 和最终 test 指标。本地旧日志只有 11 轮，不能据此宣称训练已完成 20 轮。旧权重类别顺序是 ADI、LYM、DEB、MUC、MUS、NORM、STR、TUM，新脚本保留此顺序，不能按字母排序解释旧权重。
 
-在目标环境安装（当前使用 xcjenv；如使用 YuHou，先激活 YuHou）：
+## 环境
 
-```powershell
-conda activate xcjenv
-python -m pip install pandas matplotlib tqdm
+先保留已工作的 torch/torchvision CUDA 组合，不要为了安装其他依赖覆盖它们：
+
+```bat
+python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"
+python -m pip install numpy pillow tqdm matplotlib
 ```
 
-路径只在 utils/path_config.py 的 CONFIG 区域配置：
+仅统计工具需 pandas；UNI 额外安装 `python -m pip install "timm>=1.0,<2"`。XGBoost、openpyxl、transformers 不是当前训练必需。项目默认随代码目录迁移，路径在 utils/path_config.py 集中配置，优先 ASCII 目录名，兼容已有 U+2011 数据目录。
 
-```python
-ROOT = Path(r"D:\xcjhhh\Classify")
+## 训练模型对比
+
+`--root` 保持服务器已修改版本的语义：指向含 train/val/test 的 PAPER 数据集。`--project-root` 才是项目目录，默认由代码位置推断。相对数据路径与预训练路径相对于项目目录。
+
+先试跑训练/验证各两批，不保存正式权重：
+
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model efficientnet_b0 --batch-size 8 --smoke-test
 ```
 
-其他脚本顶部 CONFIG 导入这一配置，不重复硬编码路径。目录名使用 U+2011 连字符 `‑`；若磁盘使用普通 `-`，在同一个配置文件修改 DATASET_NAME。
+正式训练：
 
-```powershell
-python utils/path_config.py
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model efficientnet_b0 --run-name baseline --epochs 20 --batch-size 8
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model resnet50 --run-name baseline --epochs 20 --batch-size 8
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model resnet101 --run-name baseline --epochs 20 --batch-size 8
 ```
 
-## 第一步：数据统计
+UNI 显存要求较高，先试跑：
 
-```powershell
-python dataset_stat.py
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model uni --batch-size 2 --smoke-test
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model uni --run-name baseline --epochs 20 --batch-size 2
 ```
 
-仅扫描 PNG（大小写不敏感，可递归），不解码图片。示例 `1302097_896_14784_ADI.png` 的首段是 slideID，保留前导零。支持同类重复后缀，例如 `1434704_1568_21728_ADI_ADI.png`。目录不存在、无 PNG、文件名或类别异常时会报错，不静默漏图。
-
-分批运行时，依次执行：
-
-```powershell
-python dataset_stat.py --scan-class ADI
-python dataset_stat.py --scan-class DEB
-python dataset_stat.py --scan-class LYM
-python dataset_stat.py --scan-class MUC
-python dataset_stat.py --scan-class MUS
-python dataset_stat.py --scan-class NORM
-python dataset_stat.py --scan-class STR
-python dataset_stat.py --scan-class TUM
-python dataset_stat.py --summarize
-```
-
-每类成功后保存缓存；中断只需重跑未完成类别，不支持类别内部逐文件断点。`--summarize` 仅汇总八类缓存，任何类别未完成会拒绝汇总。扫描期间保持原图不变，移动项目或修改数据后重新扫描。分批不能修复 Python 环境的 Illegal instruction 等原生崩溃。
-
-若已将旧 output 改名为 output_legacy，可直接复用已完成的图片映射：
-
-```powershell
-python dataset_stat.py --import-legacy-map "output_legacy/stat/patch_patient_map.csv"
-```
-
-这会逐行核对旧 patient_id 是否等于文件名首段，再将其作为 slideID，检查类别、重复记录和路径。只有八类都存在且全部记录通过验证，才生成新缓存并汇总，不读取临床文件、不修改旧 CSV、不重新扫描原图。导入的是旧文件清单快照，不能证明磁盘数据未变化；采样前仍会复扫当前原图清单。建议核对本次总数是否与之前的 547,971 张、500 个编号一致。
-
-产物位于 output/stat：
-
-| 文件 | 内容 |
+| model | 本地预训练文件 |
 | --- | --- |
-| mapping.csv | img_name,slideID,cls；img_name 相对于类别目录 |
-| class_patch_counts.csv | 每类 PNG 总数 |
-| slide_patch_counts.csv | 每张 WSI 的八类数量和 total |
-| class_patch_counts.png | 类别数量柱状图 |
+| efficientnet_b0 | pretrained/efficientnet_b0_rwightman-3dd342df.pth |
+| resnet50 | pretrained/resnet50-0676ba61.pth |
+| resnet101 | pretrained/resnet101-63fe2227.pth |
+| uni | pretrained/UNI/pytorch_model.bin |
 
-控制台打印每类数量、唯一 slide 数和每张 slide 的 patch 数分布，据此选择子集规模；不将 slideID 解释为患者编号。
+不自动下载权重，严格检查结构匹配。`--pretrained` 可指定其他本地输入文件。CTransPath.pth 和其他 ViT 文件保留，但未适配其架构，不能直接作为普通 ViT 权重加载。UNI 与 CNN 都做全参数微调，使用相同划分和预处理；比较时记录预训练来源、batch size 和训练预算差异。
 
-## 第二步：采样与划分
+## 自动保存和断点恢复
 
-### 当前环境崩溃时的标准库入口
+每个实验自动生成独立目录，已有实验不覆盖：
 
-如果加载 pandas/NumPy 后出现 Illegal instruction、unknown opcode 等崩溃，可暂用下列入口直接复用旧映射，不安装依赖、不要求生成 output/stat/mapping.csv：
-
-```powershell
-python -X faulthandler -u wsi_subset_stdlib.py --select-slide-num 50 --dry-run
-python -X faulthandler -u wsi_subset_stdlib.py --select-slide-num 50
+```text
+outputs/experiments/<model>/<run-name>/
+  config.json
+  weights/best.pth         # val macro-F1 最佳的完整断点
+  weights/last.pth         # 最后完成一轮的完整断点
+  reports/history.csv
+  reports/loss_curve.png
+  reports/accuracy_curve.png
+  reports/macro_f1_curve.png
+  reports/best_val_metrics.json
+  reports/best_val_per_class.csv
+  reports/best_val_confusion_matrix.csv
+  reports/best_val_confusion_matrix.png
 ```
 
-默认读取 output_legacy/stat/patch_patient_map.csv，也支持 `--map` 指定三列 slideID 新映射。只使用标准库及 utils/path_config.py，不读取临床表。先逐行核对文件名前缀，再枚举原图 PNG 文件清单检查增删（不解码、不重新绘图统计）；完整保留选中 WSI 的所有 patch，划分规则及 PAPER 输出与正式模式一致。
+每轮结束原子保存权重和完整历史，再更新曲线。恢复例子：
 
-断点位于 `output/wsi_subset_checkpoint/`：CSV 完整校验后保存映射缓存，每完成一个类别立即保存核对进度。中断后重复同一命令即可跳过这些已完成步骤；CSV 尚未完整校验或类别尚未完成时，需要重做该步骤。每次恢复仍读取已验证缓存并重新计算确定性的 WSI 分配。dry-run 保存断点但不复制图片。旧 CSV、根路径或解析配置发生变化会使缓存失效。
-
-恢复期间原图必须保持不变。若增删或修改原图，运行时加 `--recheck-files` 重新核对全部类别；缓存不是磁盘实时扫描结果。正式复制中断后再次运行相同参数，会验证 .building 的数据和计划标识，再对已有副本与原图计算 SHA256，匹配则跳过、不匹配则重复制；每张图片通过临时文件原子替换。禁止覆盖已有最终数据集或复用不同计划的半成品。不同参数可以复用扫描缓存，但不能复用旧计划的 .building。
-
-此入口及断点不能修复 access violation、unknown opcode 或硬件问题，也不能保证异常机器上的结果可靠；若仍崩溃，需要继续检查 Python 和机器稳定性。CSV／断点不要删除，旧版首次执行尚未写入的新断点无法追溯恢复。
-
-子集通过复制原图生成，原图不剪切、不修改。后续训练只读取生成的子集。采样前复扫八类文件清单并核对 mapping.csv，拒绝使用增图、缺图或编号变化后的过期映射。
-
-### fast_mode：仅快速调试
-
-```powershell
-python dataset_sampling.py --mode fast_mode --sample-per-class 200 --dry-run
-python dataset_sampling.py --mode fast_mode --sample-per-class 200
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model resnet50 --run-name baseline --epochs 20 --batch-size 8 --resume
 ```
 
-每类独立随机抽取指定数量，seed=42；数量不足报错，不放回重复采样、不静默减量。输出 FAST 下八类目录，不生成正式 train/val/test。
+未完成的一轮重跑；epochs 为目标总轮数。model、run-name、batch-size、lr、workers 必须与断点一致。保存优化器、随机状态、类别和文件清单指纹（路径、标签、大小；不是逐图内容校验）。默认 workers=0，跨硬件不保证数值完全相同。读图失败会明确报错，不再用黑图替代。
 
-此模式拆开 WSI 的 patch；后续若按图片随机划分，可能出现 slide 跨集合和染色风格泄露。仅用于加载、显存和超参数流程调试，不能报告正式性能。split_mapping.csv 的 split 为 debug，slide_splits.csv 不代表正式划分。
+旧服务器 checkpoint 缺少完整配置及随机状态，且 best_f1 保存顺序落后一轮。新脚本不直接续训旧断点，保留旧脚本备份在 outputs/archive/retired_patient_msi_code.zip。新实验从预训练权重开始，按新格式续训；旧训练结果原样保留。
 
-### paper_mode：正式 WSI 分组实验
+旧日志的 loss/accuracy/F1 曲线已根据现存 11 轮历史重建到 legacy_baseline/reports，不能补回未记录的轮次。
 
-```powershell
-python dataset_sampling.py --mode paper_mode --select-slide-num 50 --dry-run
-python dataset_sampling.py --mode paper_mode --select-slide-num 50
+## 最终测试
+
+调参只用 val，设置确定后评估 test：
+
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model resnet50 --run-name baseline --batch-size 8 --evaluate-test
 ```
 
-先对排序后的全部 slideID 用 seed=42 无放回选择 50 张 WSI，保留它们在八类目录的全部 PNG；再固定种子打乱选中 WSI，按 70%/15%/15% 分配 train/val/test。所有类别共用同一份 WSI 分配。
+输出 test_metrics.json、test_per_class.csv、test_confusion_matrix.csv/png。指标为八分类 loss、accuracy、macro-F1，不是 MSI 指标。不要根据 test 结果反复调参。
 
-用最大余数法取整，小子集比例为近似值；50 张对应 35/8/7。至少选择 7 张且不超过实际总数。脚本检查 WSI 不跨集合，并打印各集合 slide 数和八类数量。若某集合缺少类别，复制前报错，请增加 WSI 数，不通过补抽单张 patch 破坏分组。
+### 完整评估产物（最佳验证集和最终测试集）
 
-不保证类别计数均衡。参数控制 WSI 数，不能精确控制 patch 总数；选中 WSI 的全部 PNG 都保留。paper_mode 是本项目的正式方案，不表示论文原文采用完全相同的三集合比例。
+图片标题及说明使用中文，Precision、Recall、F1、AUC、ROC 等指标保留英文。Windows 优先用微软雅黑/黑体；Linux 推荐安装 Noto CJK（Ubuntu/Debian 可用 `sudo apt-get install fonts-noto-cjk`），然后重启绘图进程。无管理员权限时，设置环境变量 `HMU_FONT_PATH` 指向已有中文字体的 .ttf/.ttc/.otf 文件。没有可用中文字体时会提示，避免把缺字方框误认为图片内容问题。
 
-## 第三步：检查输出
+每次验证 macro-F1 改善时输出 `best_val_*`；单独执行 --evaluate-test 时输出 `test_*`，保存在各模型/实验的 reports 目录。原来已有每类 Precision/Recall/F1 CSV，现在补全柱状图与概率评估。
 
-| 文件 | 内容 |
+| 文件后缀 | 内容 |
 | --- | --- |
-| mapping.csv | 子集全部图片，严格三列 img_name,slideID,cls |
-| split_mapping.csv | 映射加 split 列，记录 train/val/test 或 debug |
-| slide_splits.csv | 每张选中 WSI 的集合归属 |
-| train/val/test/mapping.csv | paper_mode 各集合的三列映射 |
+| _metrics.json | loss、accuracy、macro-P/R/F1、weighted-F1、balanced accuracy、Cohen's κ、Mean-AUC、micro-AUC、mean Average Precision |
+| _per_class.csv | 每类 Precision、Recall、F1、support |
+| _precision_recall_f1.png | 八类 P/R/F1 分组柱状图 |
+| _auc_per_class.csv | 每类 OvR AUC、Average Precision、是否可计算 |
+| _roc_ovr.png | 八类 OvR ROC、插值宏平均 ROC、micro ROC，标题标注 Mean-AUC |
+| _confusion_matrix.csv | 原始错分计数 |
+| _confusion_matrix.png | 按真实类别行归一化的混淆矩阵 |
+| _confusion_matrix_counts.png | 原始计数混淆矩阵 |
+| _confused_pairs.csv | 按数量排序的定向错分对，含占真实类比例，例如 STR→MUS 与 MUS→STR |
+| _predictions.csv | 图片相对路径、真实类别、预测类别、八类 softmax 概率，方便复核与重绘 |
 
-正式模式图片路径为 `PAPER/<split>/<cls>/<img_name>`。img_name 始终相对于类别目录，根 mapping.csv 需结合 split_mapping.csv 定位图片。
+Mean-AUC 是八个 OvR AUC 的等权算术平均，不是 accuracy，也不是把硬预测标签当概率；micro-AUC 为展开 one-hot 标签与概率后的汇总 AUC。ROC 图中的宏平均曲线通过插值绘制，其曲线下面积不作为另一个 Mean-AUC。每类没有正例或负例时 AUC 不可定义，CSV 留空、JSON 使用 null，完整八类 Mean-AUC 也设为 null，不用 0 或 1 代替。balanced accuracy 为有样本类别 Recall 均值，weighted-F1 按 support 加权。Precision/Recall/F1 的零分母按 0 处理。
 
-复制使用 shutil.copy2，并检查副本字节大小，不解码验证图片内容。已有输出拒绝覆盖。先写入同级 `.building` 目录，全部成功后重命名；中断保留 `.building`，不发布半成品。重跑前请确认后手动移走未完成副本，或在路径配置中设置新的输出位置。同一输入和参数下选择与划分可复现。
+Average Precision 是 PR 曲线的汇总指标，对类别不平衡提供补充；它不是 ROC-AUC，也不等于梯形积分的 PR-AUC。本入口暂不绘制 PR 曲线。概率保存在 CPU，仅验证/测试收集，不参与反向传播。
 
-## 迁移到 4080Super
+新增 AUC 需要 scikit-learn：`python -m pip install scikit-learn`。已有 best 权重无需重训，执行 --evaluate-test 即可生成这些测试结果；原始旧服务器 best.pth 使用下方 --legacy-weights 命令。已经生成的旧混淆矩阵无法还原 ROC，必须重新推理获得概率。选择最佳模型仍只用 val macro-F1；测试指标不反馈到训练。逐轮 history 保留 train/val loss、accuracy、macro-F1，新增完整指标写入最佳验证/测试报告。
 
-1. 本地运行统计，再运行 `--dry-run` 检查计划。
-2. 复制项目和 datasets 到目标机器，安装上述三个依赖。
-3. 只修改 utils/path_config.py 的 ROOT，其余脚本无需修改。
-4. 运行路径预览、统计，再按选定参数采样。新机器建议重建统计缓存。
-5. 保留正式 slide_splits.csv；后续训练直接使用既定三个集合，不重新随机拆分。
+这些是 patch 级汇总指标，patch 来自同一 WSI，不能将 patch 当作独立患者声称统计显著。正式模型比较应使用相同 WSI 划分，尽可能补充多随机种子实验；置信区间若后续添加，应按 WSI 聚类重采样，不按单张 patch 随机 bootstrap。
 
-Linux 示例为 `ROOT = Path(r"/data/Classify")`；也可用脚本的 `--root` 临时覆盖。数据准备仅用 CPU 和磁盘，无需 GPU。
+旧服务器 EfficientNet 原始 best.pth（不是更早的 efficientnet_wsi 权重）可单独评估：
 
-## EfficientNet-B0 基线入口
-
-数据准备完成后可使用 `src/stage1_train_8cls/train_wsi_baseline.py`。这属于可选后续训练步骤，需另有匹配 CUDA 的 torch、torchvision；不使用旧的患者训练入口。读取 PAPER 的既定三集合并核对 WSI 互斥，不读临床表。ImageNet 权重放在项目 `pretrained/efficientnet_b0_rwightman-3dd342df.pth`（也接受 7f5810bc 文件名），不联网下载。
-
-```powershell
-python src/stage1_train_8cls/train_wsi_baseline.py --batch-size 32 --smoke-test
-python src/stage1_train_8cls/train_wsi_baseline.py --epochs 20 --batch-size 32
-python src/stage1_train_8cls/train_wsi_baseline.py --epochs 20 --batch-size 32 --resume
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-PAPER" --model efficientnet_b0 --run-name legacy_baseline --evaluate-test --legacy-weights "outputs/experiments/efficientnet_b0/legacy_baseline/weights/best.pth" --batch-size 8
 ```
 
-smoke-test 仅训练与验证各两批，不保存正式权重；正式训练每个完整 epoch 原子保存 last.pth，验证 macro-F1 改善时保存 best.pth。目录为 `outputs/weights/stage1_8cls/efficientnet_wsi/`。--resume 从最后完成的 epoch 恢复，未完成 epoch 重跑；batch-size 和 lr 必须保持一致，epochs 为目标总轮数。num_workers=0 适用于 Windows，CUDA 可用时使用 GPU。
+## 数据准备与可删除内容
 
-调参完成后单独评估一次测试集：
+保留 dataset_stat.py、dataset_sampling.py、wsi_subset_stdlib.py，已成功划分的数据训练时不用重建。标准库入口默认使用 output/stat/legacy_patch_map.csv，断点仍在 output/wsi_subset_checkpoint。恢复时保持原图不变，变化后加 --recheck-files。
 
-```powershell
-python src/stage1_train_8cls/train_wsi_baseline.py --batch-size 32 --evaluate-test
-```
-
-测试不参与模型选择，结果输出到 `outputs/figures/stage1_8cls/efficientnet_wsi/` 的 test_metrics.csv 与 test_confusion_matrix.csv（此入口暂不绘图）。固定随机种子不保证不同硬件上数值完全一致；先完成试跑，再进行正式实验。
-
-## 论文方法描述
-
-“本研究以全切片图像 WSI（slideID）为划分最小单元，固定随机种子选择子集，保留所选 WSI 的全部已发布 patch，按约 7:1.5:1.5 划分训练、验证和测试集。同一 WSI 的样本仅属于一个集合，避免同一切片跨集合导致的染色风格及局部图像信息泄露。”
-
-这一保证限于 WSI 层面，不能声称消除全部染色偏差或患者级泄露；没有 slide–patient 映射，无法排除同一患者拥有多张不同 WSI。已发布 patch 经过组织采样，不用于推断真实切片的组织面积占比。
+确认无需重建子集后可删除 output 中的扫描缓存；outputs/archive 另有备份后可手动删除。必须保留正式子集的三个集合及划分 CSV、需要比较的预训练权重，以及实验的 config/history/best/last。不要跨 Windows/Linux 拷贝虚拟环境。

@@ -3,6 +3,9 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import contextlib
+import io
 from PIL import Image
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -30,7 +33,7 @@ class BaselineTests(unittest.TestCase):
             self.assertEqual(len(manifest), 24)
             self.assertEqual(tuple(data["train"][0][0].shape), (3, 224, 224))
             Image.new("RGB", (16, 16)).save(root / "val/ADI/0_3_4_ADI.png")
-            with self.assertRaisesRegex(ValueError, "跨集合"):
+            with self.assertRaisesRegex(ValueError, "overlap"):
                 baseline.load_data(root)
 
     def test_train_updates_weights_and_eval_does_not(self):
@@ -45,6 +48,35 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue(torch.equal(before, model.weight))
         self.assertEqual(matrix.sum().item(), 8)
         self.assertTrue(0 <= scores["macro_f1"] <= 1)
+
+    def test_checkpoint_resume_and_report_generation(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            project = Path(temporary)
+            root = project / "dataset"
+            for index, split in enumerate(("train", "val", "test")):
+                for cls in baseline.CLASSES:
+                    folder = root / split / cls
+                    folder.mkdir(parents=True)
+                    Image.new("RGB", (8, 8)).save(folder / f"{index}_1_2_{cls}.png")
+            def tiny(*args):
+                return torch.nn.Sequential(torch.nn.AdaptiveAvgPool2d(1), torch.nn.Flatten(), torch.nn.Linear(3, 8))
+            args = ["--root", str(root), "--project-root", str(project), "--batch-size", "8", "--epochs", "1"]
+            with patch.object(baseline, "build_model", side_effect=tiny), contextlib.redirect_stdout(io.StringIO()):
+                baseline.main(args)
+                output = project / "outputs/experiments/efficientnet_b0/baseline"
+                first = baseline.load_checkpoint(output / "weights/last.pth")
+                self.assertEqual(first["epoch"], 1)
+                self.assertEqual(first["best"], first["history"][0]["val_macro_f1"])
+                with self.assertRaises(FileExistsError):
+                    baseline.main(args)
+                resumed = args[:-1] + ["2", "--resume"]
+                baseline.main(resumed)
+                second = baseline.load_checkpoint(output / "weights/last.pth")
+                self.assertEqual(second["epoch"], 2)
+                self.assertEqual(len(second["history"]), 2)
+                self.assertTrue((output / "reports/loss_curve.png").is_file())
+                baseline.main(args + ["--evaluate-test"])
+                self.assertTrue((output / "reports/test_confusion_matrix.png").is_file())
 
 
 if __name__ == "__main__":

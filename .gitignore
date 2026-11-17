@@ -7,6 +7,10 @@ datasets/HMU‑CRC‑Hist550K-PAPER/
 datasets/HMU‑CRC‑Hist550K-FAST.building/
 datasets/HMU‑CRC‑Hist550K-PAPER.building/
 output/*
+output_legacy/
+outputs/experiments/
+outputs/archive/
+datasets/HMU-CRC-Hist550K*/
 !output/.gitkeep
 
 # 权重文件

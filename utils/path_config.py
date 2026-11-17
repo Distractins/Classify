@@ -4,8 +4,8 @@ import argparse
 import os
 
 # ==================== CONFIG ====================
-ROOT = Path(r"D:\xcjhhh\Classify")
-DATASET_NAME = "HMU‑CRC‑Hist550K"  # U+2011 连字符，须与实际目录一致
+ROOT = Path(__file__).resolve().parents[1]  # 默认随项目迁移；可改为 Path(r"/data/Classify")
+DATASET_NAME = "HMU-CRC-Hist550K"  # 新目录统一使用 ASCII 短横杠
 CLASSES = ("ADI", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TUM")
 SEED = 42
 # =================================================
@@ -13,12 +13,18 @@ SEED = 42
 
 def paths(root=None):
     base = Path(root if root is not None else ROOT).expanduser().resolve()
+    # 已有 Unicode 目录仍可使用，不自动重命名原图。
+    dataset_name = DATASET_NAME
+    legacy_name = "HMU‑CRC‑Hist550K"
+    if not any((base / "datasets" / (dataset_name + suffix)).exists() for suffix in ("", "-PAPER")):
+        if any((base / "datasets" / (legacy_name + suffix)).exists() for suffix in ("", "-PAPER")):
+            dataset_name = legacy_name
     return {
         "root": base,
-        "raw": base / "datasets" / DATASET_NAME,
+        "raw": base / "datasets" / dataset_name,
         "stat": base / "output" / "stat",
-        "fast": base / "datasets" / (DATASET_NAME + "-FAST"),
-        "paper": base / "datasets" / (DATASET_NAME + "-PAPER"),
+        "fast": base / "datasets" / (dataset_name + "-FAST"),
+        "paper": base / "datasets" / (dataset_name + "-PAPER"),
     }
 
 
