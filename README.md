@@ -190,6 +190,29 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 
 ## 数据准备与可删除内容
 
+### 每张 WSI、每类限额 50 张：中等规模数据集
+
+新入口 `wsi_capped_sampling.py` 沿用已生成 FULL 中的 train/val/test 归属，不重新划分 WSI；在每个 WSI 自己的每个类别中随机保留最多 50 张 PNG，不足则全部保留。seed=42，各组使用稳定的独立种子。所有原 WSI 必须至少保留一张，且三集合 WSI 交集为空；未选中 patch 不参与本次实验，不放进其他集合。此步骤明确替代旧的“所选 WSI 全部 patch 必须保留”要求，仍保证 WSI 隔离，不保证未知患者身份的隔离。
+
+```bat
+python wsi_capped_sampling.py --max-per-wsi-class 50 --exclude-image "val/TUM/1432083_10080_4480_TUM.png" --dry-run
+python wsi_capped_sampling.py --max-per-wsi-class 50 --exclude-image "val/TUM/1432083_10080_4480_TUM.png"
+```
+
+默认源目录为 datasets/HMU-CRC-Hist550K-FULL，输出独立 FULL-CAP50，可通过 --source/--output 指定路径。只用标准库，不读取临床表，不解码图片；exclude-image 为用户已确认的坏图路径，必须在源目录存在，记录到 excluded_images.csv。其他未识别的坏图仍可能需要另行检查，不会静默用黑图替代。
+
+train/val/test 都采样，500 个 WSI 的总图片上限为 500×8×50=200,000 张，训练上限 140,000 张。实际更少；每类数量、集合图片数和 WSI 数会打印。验证和测试样本发生变化，不直接与旧 FULL/PAPER 测试成绩混同；所有后续对比模型应共用 CAP50。原 FULL 及其映射/图片不修改。
+
+中断后重复同一正式命令，保留 FULL-CAP50.building；脚本重新枚举并生成相同计划，通过源目录、参数和计划标识检查后，对已有副本计算 SHA256，一致则跳过，否则重复制。每张图通过临时文件原子发布；写完根映射、各集合映射、WSI 归属与排除清单后，才改为最终目录。输入不变、参数不变才能续跑，已有最终输出拒绝覆盖。无法修复机器非法内存访问等底层异常。
+
+新数据集必须新建训练实验，不能用 FULL 的 last.pth 直接续训：
+
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL-CAP50" --model efficientnet_b0 --run-name cap50_5ep --epochs 5 --batch-size 8 --lr 0.0001 --weight-decay 0.00001 --save-every-batches 100 --smoke-test
+```
+
+试跑后去掉 smoke-test 正式训练，续训加 resume。已排除坏图不在新数据集中，因此新实验不要再带旧的 exclude-val-image 参数。
+
 ### 全量数据的独立实验
 
 优先复用完整映射：脚本依次查找 output/stat/legacy_patch_map.csv、output_legacy/stat/patch_patient_map.csv、output/stat/patch_patient_map.csv、output/stat/mapping.csv。都不存在时，自动从原始八类 PNG 文件名生成 output/stat/mapping.csv，不需要 pandas、不读取临床表、不解码图片。显式 --map 指定的文件缺失则报错，不自动改用其他文件。原始八类目录必须仍在 datasets/HMU-CRC-Hist550K，脚本会核对映射与实际文件清单，不能用 PAPER 子集映射冒充全集。首次生成映射中断需重新枚举，成功保存后可继续使用后续校验/复制断点。先预览，再复制全部 WSI 并固定划分：
