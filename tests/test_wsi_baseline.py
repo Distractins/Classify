@@ -16,6 +16,28 @@ import train_wsi_baseline as baseline
 
 
 class BaselineTests(unittest.TestCase):
+    def test_explicit_bad_validation_image_exclusion(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            samples = []
+            for label, cls in enumerate(baseline.CLASSES):
+                path = root / "val" / cls / f"001_1_2_{cls}.png"
+                path.parent.mkdir(parents=True)
+                Image.new("RGB", (8, 8)).save(path)
+                samples.append((str(path), label))
+            bad = root / "val/TUM/001_3_4_TUM.png"
+            bad.write_bytes(b"not an image")
+            samples.append((str(bad), baseline.CLASSES.index("TUM")))
+            data = {"val": baseline.PatchDataset(samples, None)}
+            names = baseline.exclude_validation_images(data, root, ["val/TUM/001_3_4_TUM.png"])
+            self.assertEqual(len(data["val"]), 8)
+            self.assertTrue(bad.exists())
+            self.assertEqual(names, ["val/TUM/001_3_4_TUM.png"])
+            with self.assertRaisesRegex(ValueError, "decodable"):
+                baseline.exclude_validation_images(data, root, ["val/ADI/001_1_2_ADI.png"])
+            with self.assertRaises(ValueError):
+                baseline.exclude_validation_images(data, root, ["train/TUM/001_3_4_TUM.png"])
+
     def test_string_parser_preserves_id_and_checks_class(self):
         self.assertEqual(baseline.config.parse_slide_id(r"ADI\00123_1_2_ADI_ADI.png", "ADI"), "00123")
         with self.assertRaises(ValueError):

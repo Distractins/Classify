@@ -90,6 +90,24 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 
 ## 自动保存和断点恢复
 
+### 冻结 UNI：Linear、MLP 和 AETHER 对照
+
+现有 `--model uni` 默认为 `--uni-mode finetune`，行为不变；CNN 的训练与旧断点保持兼容。新增 `--uni-mode linear/mlp/aether`：UNI 参数 requires_grad=False，始终 eval，forward_features 在 no_grad 内执行。优化器仅更新分类头，以及 AETHER 模式的增强模块。仍需完整加载本地 UNI .bin；训练中不缓存特征。
+
+三种冻结模式均移除 CLS/其他前缀 token，对空间 tokens 做均值聚合，避免基线使用 CLS 而方法使用空间 tokens 的混淆。AETHER 在聚合前增强 token；Linear 是 1024→8，MLP 默认 1024→256→GELU→Dropout(0.1)→8。AETHER 分类头仍为 Linear。AETHER 的 hard_cls_idx 保留原模块默认 (2,6,4)，在当前类别顺序下对应 DEB、STR、MUS。sim_matrix 暂不加入额外监督；不跨 patch 或 WSI 聚合。
+
+AETHER 总损失为 CE + `--ortho-weight` × ortho_reg（默认 0.01，经验起点，不代表最优值）；Linear/MLP 是 CE。AETHER 的 loss 曲线为含正则的总损失，不能与 CE-only 模式当作同一损失直接比较；accuracy/F1/AUC 计算一致。
+
+```bat
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model uni --uni-mode linear --run-name frozen_5ep --epochs 5 --batch-size 2 --lr 0.0001 --weight-decay 0.00001 --save-every-batches 100
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model uni --uni-mode mlp --run-name frozen_5ep --epochs 5 --batch-size 2 --lr 0.0001 --weight-decay 0.00001 --save-every-batches 100
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model uni --uni-mode aether --run-name frozen_5ep --epochs 5 --batch-size 2 --lr 0.0001 --weight-decay 0.00001 --ortho-weight 0.01 --save-every-batches 100
+```
+
+先在对应命令末尾加 --smoke-test 试跑；正式命令移除该项。恢复加 --resume；最终评估加 --evaluate-test（不要同时加 resume）。输出分别为 `outputs/experiments/uni_frozen_linear/frozen_5ep/`、`uni_frozen_mlp/frozen_5ep/`、`uni_frozen_aether/frozen_5ep/`。头配置及模式写入断点，模式不能相互续训；hidden_dim/dropout/ortho_weight 也需与原断点一致。现有 UNI 全参数微调结果和 CNN 结果无需重跑。
+
+冻结模式断点仍包含完整 UNI，便于独立恢复且不依赖后来被替换的预训练文件；因此冻结后断点仍较大，保存耗时并不会按可训练参数量同比减少。可调大 save-every-batches 减少磁盘开销。小模型测试可验证冻结及梯度逻辑，真实 UNI 的显存/速度和完整训练需在服务器试跑确认。
+
 每个实验自动生成独立目录，已有实验不覆盖：
 
 ```text
@@ -122,6 +140,12 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 旧日志的 loss/accuracy/F1 曲线已根据现存 11 轮历史重建到 legacy_baseline/reports，不能补回未记录的轮次。
 
 ## 最终测试
+
+### 无法修复的验证集坏图
+
+原图也损坏而无法恢复时，可显式加 `--exclude-val-image "val/TUM/1432083_10080_4480_TUM.png"`，只允许排除实际无法解码的验证图片，不替换黑图、不删除原文件、不改训练样本或 WSI 归属。该选项可重复；所有后续模型对比需使用相同清单，报告验证样本数量变化。排除名单写入配置及断点，恢复/测试需传相同选项。原始文件清单指纹仍核对全部文件，不会因此绕过缺图或大小变化校验。
+
+已有无排除清单的断点仅允许通过 resume 显式迁移到新验证清单；保留历史指标并标记 val_excluded_count，重置最佳验证分数。旧 best.pth 如存在则备份为 best_before_val_exclusion.pth；新最佳权重在下一次完整验证后产生，不能拿旧验证分数与新分数直接比较。已完成所有目标轮次时需另行规划验证或延长训练，不自动将旧 best 宣称为新验证集选出的最佳模型。
 
 调参只用 val，设置确定后评估 test：
 

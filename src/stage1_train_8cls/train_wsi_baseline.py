@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -97,7 +98,8 @@ def load_data(root):
     return result, manifest
 
 
-def build_model(name, project, pretrained=True, weight_override=None):
+def build_model(name, project, pretrained=True, weight_override=None, uni_mode="finetune",
+                hidden_dim=256, dropout=0.1, ortho_weight=0.01):
     if name == "uni":
         try:
             import timm
@@ -119,6 +121,10 @@ def build_model(name, project, pretrained=True, weight_override=None):
         state = torch.load(path, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=True)
     if name == "uni":
+        if uni_mode != "finetune":
+            from network.frozen_uni import FrozenUNIClassifier
+            # Preserve existing AETHER hard-class indices under the current class order.
+            return FrozenUNIClassifier(model, uni_mode, hidden_dim, dropout, ortho_weight)
         model.reset_classifier(8)
     elif name == "efficientnet_b0":
         model.classifier[1] = nn.Linear(model.classifier[1].in_features, 8)
@@ -144,7 +150,12 @@ def run_epoch(model, loader, device, optimizer=None, limit=0, collect_prediction
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
             logits = model(images)
+            regularizer = None
+            if isinstance(logits, tuple):
+                logits, regularizer = logits
             loss = nn.functional.cross_entropy(logits, labels)
+            if regularizer is not None:
+                loss = loss + regularizer
             if not torch.isfinite(loss):
                 raise RuntimeError("Non-finite loss; refusing to save this epoch")
             if optimizer is not None:
@@ -179,11 +190,39 @@ def safe_name(value):
     return value
 
 
+def exclude_validation_images(data, dataset, requested):
+    """Explicitly exclude only confirmed undecodable validation images, preserving source files."""
+    names = sorted(set(name.replace("\\", "/") for name in requested))
+    indexed = {os.path.relpath(filename, dataset).replace("\\", "/"): (filename, label)
+               for filename, label in data["val"].samples}
+    for name in names:
+        if not name.startswith("val/") or name not in indexed:
+            raise ValueError(f"Exclusion must name an existing validation image: {name}")
+        try:
+            with Image.open(indexed[name][0]) as image:
+                image.convert("RGB").load()
+        except (OSError, ValueError, SyntaxError):
+            pass
+        else:
+            raise ValueError(f"Image is decodable; refusing to exclude it as corrupt: {name}")
+    remaining = [sample for name, sample in indexed.items() if name not in names]
+    if names:
+        if {label for _, label in remaining} != set(range(8)):
+            raise ValueError("Exclusions would remove a validation class")
+        data["val"].samples = remaining
+        print(f"Explicit validation exclusions: {names}; remaining={len(remaining):,}", flush=True)
+    return names
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", "--dataset", dest="dataset", help="PAPER dataset directory, matching the server CLI")
     parser.add_argument("--project-root", default=str(PROJECT), help="Project directory containing pretrained and outputs")
     parser.add_argument("--model", choices=MODEL_NAMES, default="efficientnet_b0")
+    parser.add_argument("--uni-mode", choices=("finetune", "linear", "mlp", "aether"), default="finetune")
+    parser.add_argument("--head-hidden-dim", type=int, default=256)
+    parser.add_argument("--head-dropout", type=float, default=0.1)
+    parser.add_argument("--ortho-weight", type=float, default=0.01)
     parser.add_argument("--run-name", type=safe_name, default="baseline")
     parser.add_argument("--pretrained", help="Local pretrained file, relative to project directory")
     parser.add_argument("--epochs", type=int, default=20)
@@ -197,7 +236,13 @@ def main(argv=None):
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--evaluate-test", action="store_true")
     parser.add_argument("--legacy-weights", help="Evaluate original server best.pth with ADI,LYM,DEB,... class order")
+    parser.add_argument("--exclude-val-image", action="append", default=[],
+                        help="Explicit corrupt validation image relative path; repeat for multiple images, keep files on disk")
     args = parser.parse_args(argv)
+    if args.model != "uni" and args.uni_mode != "finetune":
+        parser.error("Frozen head modes are available only for UNI")
+    if args.head_hidden_dim < 1 or not 0 <= args.head_dropout < 1 or args.ortho_weight < 0:
+        parser.error("Invalid head dimensions, dropout or regularization weight")
     if args.epochs < 1 or args.batch_size < 1 or args.lr <= 0 or args.workers < 0 or args.weight_decay < 0:
         parser.error("epochs, batch-size and lr must be positive; workers must be nonnegative")
     if sum((args.resume, args.smoke_test, args.evaluate_test)) > 1:
@@ -217,7 +262,9 @@ def main(argv=None):
         dataset = project / dataset
     data, manifest = load_data(dataset)
     fingerprint = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
-    output = project / "outputs/experiments" / args.model / args.run_name
+    exclusions = exclude_validation_images(data, dataset, args.exclude_val_image)
+    experiment_model = args.model if args.uni_mode == "finetune" else "uni_frozen_" + args.uni_mode
+    output = project / "outputs/experiments" / experiment_model / args.run_name
     weights, reports = output / "weights", output / "reports"
     last, best_path = weights / "last.pth", weights / "best.pth"
     if not (args.resume or args.smoke_test or args.evaluate_test) and output.exists():
@@ -227,11 +274,20 @@ def main(argv=None):
     override = Path(args.pretrained) if args.pretrained else None
     if override and not override.is_absolute():
         override = project / override
-    model = build_model(args.model, project, not (args.resume or args.evaluate_test), override).to(device)
+    if args.uni_mode == "finetune":
+        model = build_model(args.model, project, not (args.resume or args.evaluate_test), override).to(device)
+    else:
+        model = build_model(args.model, project, not (args.resume or args.evaluate_test), override,
+                            args.uni_mode, args.head_hidden_dim, args.head_dropout, args.ortho_weight).to(device)
+    head_config = {"hidden_dim": args.head_hidden_dim, "dropout": args.head_dropout,
+                   "ortho_weight": args.ortho_weight} if args.uni_mode != "finetune" else None
+    print(f"Parameters: trainable={sum(p.numel() for p in model.parameters() if p.requires_grad):,}, "
+          f"total={sum(p.numel() for p in model.parameters()):,}", flush=True)
     if not args.smoke_test:
         weights.mkdir(parents=True, exist_ok=True)
         reports.mkdir(parents=True, exist_ok=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
+                                  lr=args.lr, weight_decay=args.weight_decay)
     start, best, history, pending = 0, -1.0, [], None
     if args.resume or args.evaluate_test:
         if args.legacy_weights:
@@ -242,9 +298,14 @@ def main(argv=None):
         else:
             state = load_checkpoint(best_path if args.evaluate_test else last)
             if (state["fingerprint"] != fingerprint or state["classes"] != list(CLASSES)
-                    or state["model_name"] != args.model):
+                    or state["model_name"] != args.model
+                    or state.get("uni_mode", "finetune") != args.uni_mode
+                    or state.get("head_config") != head_config):
                 raise ValueError("Model, class order or dataset manifest differs from checkpoint")
             model.load_state_dict(state["model"])
+            prior_exclusions = state.get("val_exclusions", [])
+            if prior_exclusions != exclusions and (not args.resume or prior_exclusions or not exclusions):
+                raise ValueError("Validation exclusions differ from checkpoint; use the original exclusion list")
             if args.resume:
                 if (state["batch_size"] != args.batch_size or state["lr"] != args.lr
                         or state["workers"] != args.workers
@@ -257,6 +318,14 @@ def main(argv=None):
                 if device.type == "cuda" and state["cuda_rng"] is not None:
                     torch.cuda.set_rng_state_all(state["cuda_rng"])
                 start, best, history = state["epoch"], state["best"], state["history"]
+                if prior_exclusions != exclusions:
+                    # Keep prior metrics, but never compare the old validation set's best score with the new one.
+                    if best_path.exists():
+                        backup = best_path.with_name("best_before_val_exclusion.pth")
+                        if not backup.exists():
+                            shutil.copy2(best_path, backup)
+                    best = -1.0
+                    print("Validation set changed explicitly: best-score selection reset; old history retained.", flush=True)
                 pending = state.get("train_progress")
                 if pending:
                     print(f"Resume epoch {start + 1}, next training batch {pending['batch_cursor'] + 1}", flush=True)
@@ -267,6 +336,8 @@ def main(argv=None):
     def checkpoint_state(epoch, train_progress=None):
         return {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "model_name": args.model, "epoch": epoch, "best": best,
+            "uni_mode": args.uni_mode, "head_config": head_config,
+            "val_exclusions": exclusions,
             "classes": list(CLASSES), "fingerprint": fingerprint,
             "batch_size": args.batch_size, "lr": args.lr, "workers": args.workers,
             "weight_decay": args.weight_decay, "train_progress": train_progress,
@@ -310,6 +381,10 @@ def main(argv=None):
             print("Smoke test completed; no formal checkpoints saved; test not evaluated.")
             return
         row = {"epoch": epoch + 1}
+        if exclusions:
+            row["val_excluded_count"] = len(exclusions)
+            for previous in history:
+                previous.setdefault("val_excluded_count", 0)
         row.update({"train_" + k: v for k, v in train.items()})
         row.update({"val_" + k: v for k, v in val.items()})
         history.append(row)
