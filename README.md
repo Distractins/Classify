@@ -252,6 +252,16 @@ UNI 若实验采用 lr=3e-4、weight_decay=0.05、5 epochs，可显式指定，�
 确认无需重建子集后可删除 output 中的扫描缓存；outputs/archive 另有备份后可手动删除。必须保留正式子集的三个集合及划分 CSV、需要比较的预训练权重，以及实验的 config/history/best/last。不要跨 Windows/Linux 拷贝虚拟环境。
 # 染色扰动鲁棒性测试（无需重新训练）
 
+EfficientNet-B0 + AETHER 可通过训练器 `--model efficientnet_b0 --enhancer aether` 启用：ImageNet 预训练主干的最后特征图 `[B,1280,H,W]` 输入 AETHER，空间 token 均值池化后接原有 dropout 概率及新的8类 Linear 头；主干、模块、分类头全部训练，损失为 CE + `--ortho-weight` × 正交约束。AETHER 源码不变，难类索引对应 DEB/STR/MUS。默认不添加模块，旧基线和 UNI 模式保持原样。增强实验独立保存到 `outputs/experiments/efficientnet_b0_aether/<run-name>/`，checkpoint 记录模块配置，续跑及原始测试也必须传 `--enhancer aether`。染色测试脚本则从 checkpoint 自动恢复模块。
+
+```bash
+python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL-CAP50" --model efficientnet_b0 --enhancer aether --run-name cap50_10ep --epochs 10 --batch-size 8 --lr 0.0001 --weight-decay 0.00001 --ortho-weight 0.01 --save-every-batches 100
+```
+
+续跑在同一指令末尾加 `--resume`。原始测试使用同一数据、模型、enhancer、实验名及 ortho-weight，末尾加 `--evaluate-test`（不加 resume）。该实验从 ImageNet 预训练开始，不沿用已训练的裸 EfficientNet checkpoint。正式运行前可加 `--smoke-test` 验证显存和数据流程；添加模块会增加资源需求，不保证沿用 batch8 一定适配所有显卡。
+
+若需要分开执行，可给下方命令分别添加 `--method original`、`--method macenko`、`--method hed`。不传 `--output` 时会分别保存到 `reports/stain_s0.1_seed42_original/`、`reports/stain_s0.1_seed42_macenko/`、`reports/stain_s0.1_seed42_hed/`，各自互不覆盖。单组模式只生成该条件的报告，不生成三组汇总对比图表；每组以 `test_metrics.json` 保存完成为准。仍不支持组内批次断点恢复，某组中断后只需重跑该组（先移走或删除该组未完成输出目录），无需重跑其他已完成组。
+
 训练结束并根据验证集选定 `weights/best.pth` 后，可以用独立脚本一次完成原始测试、Macenko 染色变化、HED 染色扰动三组评估。训练脚本与原有 `--evaluate-test` 不变；新脚本会重新计算原始测试作为同次运行的参照，因此不要求提前单独测试。仅加载模型参数，不训练、不更新权重，不读取临床文件。
 
 EfficientNet-B0 CAP50 示例（在项目根目录运行）：

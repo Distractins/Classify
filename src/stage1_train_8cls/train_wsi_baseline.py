@@ -99,7 +99,9 @@ def load_data(root):
 
 
 def build_model(name, project, pretrained=True, weight_override=None, uni_mode="finetune",
-                hidden_dim=256, dropout=0.1, ortho_weight=0.01):
+                hidden_dim=256, dropout=0.1, ortho_weight=0.01, enhancer="none"):
+    if enhancer != "none" and (name != "efficientnet_b0" or uni_mode != "finetune"):
+        raise ValueError("CNN AETHER currently requires efficientnet_b0 with default uni-mode")
     if name == "uni":
         try:
             import timm
@@ -120,6 +122,9 @@ def build_model(name, project, pretrained=True, weight_override=None, uni_mode="
             raise FileNotFoundError(f"Local pretrained weights not found: {path}")
         state = torch.load(path, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=True)
+    if enhancer == "aether":
+        from network.efficientnet_aether import EfficientNetAETHER
+        return EfficientNetAETHER(model, ortho_weight)
     if name == "uni":
         if uni_mode != "finetune":
             from network.frozen_uni import FrozenUNIClassifier
@@ -219,6 +224,8 @@ def main(argv=None):
     parser.add_argument("--root", "--dataset", dest="dataset", help="PAPER dataset directory, matching the server CLI")
     parser.add_argument("--project-root", default=str(PROJECT), help="Project directory containing pretrained and outputs")
     parser.add_argument("--model", choices=MODEL_NAMES, default="efficientnet_b0")
+    parser.add_argument("--enhancer", choices=("none", "aether"), default="none",
+                        help="Train EfficientNet-B0 + AETHER jointly; default preserves original baseline")
     parser.add_argument("--uni-mode", choices=("finetune", "linear", "mlp", "aether"), default="finetune")
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--head-dropout", type=float, default=0.1)
@@ -239,6 +246,8 @@ def main(argv=None):
     parser.add_argument("--exclude-val-image", action="append", default=[],
                         help="Explicit corrupt validation image relative path; repeat for multiple images, keep files on disk")
     args = parser.parse_args(argv)
+    if args.enhancer != "none" and (args.model != "efficientnet_b0" or args.uni_mode != "finetune"):
+        parser.error("--enhancer aether requires --model efficientnet_b0 and default --uni-mode")
     if args.model != "uni" and args.uni_mode != "finetune":
         parser.error("Frozen head modes are available only for UNI")
     if args.head_hidden_dim < 1 or not 0 <= args.head_dropout < 1 or args.ortho_weight < 0:
@@ -264,6 +273,8 @@ def main(argv=None):
     fingerprint = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
     exclusions = exclude_validation_images(data, dataset, args.exclude_val_image)
     experiment_model = args.model if args.uni_mode == "finetune" else "uni_frozen_" + args.uni_mode
+    if args.enhancer != "none":
+        experiment_model += "_" + args.enhancer
     output = project / "outputs/experiments" / experiment_model / args.run_name
     weights, reports = output / "weights", output / "reports"
     last, best_path = weights / "last.pth", weights / "best.pth"
@@ -274,13 +285,18 @@ def main(argv=None):
     override = Path(args.pretrained) if args.pretrained else None
     if override and not override.is_absolute():
         override = project / override
-    if args.uni_mode == "finetune":
+    if args.enhancer != "none":
+        model = build_model(args.model, project, not (args.resume or args.evaluate_test), override,
+                            ortho_weight=args.ortho_weight, enhancer=args.enhancer).to(device)
+    elif args.uni_mode == "finetune":
         model = build_model(args.model, project, not (args.resume or args.evaluate_test), override).to(device)
     else:
         model = build_model(args.model, project, not (args.resume or args.evaluate_test), override,
                             args.uni_mode, args.head_hidden_dim, args.head_dropout, args.ortho_weight).to(device)
     head_config = {"hidden_dim": args.head_hidden_dim, "dropout": args.head_dropout,
                    "ortho_weight": args.ortho_weight} if args.uni_mode != "finetune" else None
+    if args.enhancer != "none":
+        head_config = {"ortho_weight": args.ortho_weight}
     print(f"Parameters: trainable={sum(p.numel() for p in model.parameters() if p.requires_grad):,}, "
           f"total={sum(p.numel() for p in model.parameters()):,}", flush=True)
     if not args.smoke_test:
@@ -299,6 +315,7 @@ def main(argv=None):
             state = load_checkpoint(best_path if args.evaluate_test else last)
             if (state["fingerprint"] != fingerprint or state["classes"] != list(CLASSES)
                     or state["model_name"] != args.model
+                    or state.get("enhancer", "none") != args.enhancer
                     or state.get("uni_mode", "finetune") != args.uni_mode
                     or state.get("head_config") != head_config):
                 raise ValueError("Model, class order or dataset manifest differs from checkpoint")
@@ -336,7 +353,7 @@ def main(argv=None):
     def checkpoint_state(epoch, train_progress=None):
         return {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "model_name": args.model, "epoch": epoch, "best": best,
-            "uni_mode": args.uni_mode, "head_config": head_config,
+            "uni_mode": args.uni_mode, "head_config": head_config, "enhancer": args.enhancer,
             "val_exclusions": exclusions,
             "classes": list(CLASSES), "fingerprint": fingerprint,
             "batch_size": args.batch_size, "lr": args.lr, "workers": args.workers,

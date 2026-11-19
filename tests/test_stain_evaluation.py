@@ -49,6 +49,18 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(names[0], names[1])
             self.assertEqual(names[1], names[2])
             self.assertTrue((output / "comparison.png").is_file())
+            # Independent runs must not evaluate other conditions or invent a
+            # zero-drop reference for a perturbed-only run.
+            for method in ("original", "macenko", "hed"):
+                single = Path(directory) / method
+                single_args = args.copy()
+                single_args[single_args.index("--output") + 1] = str(single)
+                single_args += ["--method", method]
+                with patch.object(sys, "argv", single_args), patch.object(evaluation.baseline, "build_model", return_value=model):
+                    evaluation.main()
+                self.assertTrue((single / method / "test_metrics.json").is_file())
+                self.assertFalse((single / "comparison.csv").exists())
+                self.assertEqual([p.name for p in single.iterdir() if p.is_dir()], [method])
 
 
 if __name__ == "__main__":

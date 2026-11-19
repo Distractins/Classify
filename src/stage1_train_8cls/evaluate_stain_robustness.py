@@ -47,6 +47,8 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path, help="Trusted experiment weights/best.pth")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--method", choices=("all", "original", "macenko", "hed"), default="all",
+                        help="Run all three conditions or one condition independently")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--strength", type=float, default=0.1)
@@ -56,6 +58,8 @@ def main():
         parser.error("Require 0 < strength < 1, batch-size >= 1, workers >= 0")
     root, checkpoint = args.root.resolve(), args.checkpoint.resolve()
     output = args.output or checkpoint.parent.parent / "reports" / f"stain_s{args.strength:g}_seed{args.seed}"
+    if args.output is None and args.method != "all":
+        output = output.with_name(output.name + "_" + args.method)
     if output.exists():
         raise FileExistsError(f"Choose a new --output to preserve previous results: {output}")
     state = baseline.load_checkpoint(checkpoint)
@@ -66,7 +70,8 @@ def main():
     head = state.get("head_config") or {}
     model = baseline.build_model(state["model_name"], PROJECT, pretrained=False,
         uni_mode=state.get("uni_mode", "finetune"), hidden_dim=head.get("hidden_dim", 256),
-        dropout=head.get("dropout", 0.1), ortho_weight=head.get("ortho_weight", 0.01))
+        dropout=head.get("dropout", 0.1), ortho_weight=head.get("ortho_weight", 0.01),
+        **({"enhancer": state["enhancer"]} if state.get("enhancer", "none") != "none" else {}))
     model.load_state_dict(state["model"], strict=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -78,8 +83,9 @@ def main():
     digest = checkpoint_hash.hexdigest()
     metadata = {"checkpoint": str(checkpoint), "checkpoint_sha256": digest,
         "dataset_fingerprint": fingerprint, "epoch": state["epoch"], "seed": args.seed,
-        "strength": args.strength, "classes": list(baseline.CLASSES),
+        "strength": args.strength, "method": args.method, "classes": list(baseline.CLASSES),
         "model": state["model_name"], "uni_mode": state.get("uni_mode", "finetune"),
+        "enhancer": state.get("enhancer", "none"),
         "torch": torch.__version__, "device": str(device),
         "protocol": "Resize224 then stain shift then ImageNet normalization; no test tuning; synthetic shift only",
         "macenko": "OD threshold0.15, SVD plane, angle percentiles1/99; basis noise SD=strength/5, concentration scale U(1-s,1+s); preserve OD residual",
@@ -88,7 +94,8 @@ def main():
     samples = data["test"].samples
     names = [os.path.relpath(name, root).replace("\\", "/") for name, _ in samples]
     rows = []
-    for method in ("original", "macenko", "hed"):
+    methods = ("original", "macenko", "hed") if args.method == "all" else (args.method,)
+    for method in methods:
         directory = output / method
         directory.mkdir()
         dataset = StainDataset(samples, root, method, args.strength, args.seed)
@@ -107,6 +114,9 @@ def main():
         scores, matrix, predictions = baseline.run_epoch(model, loader, device, collect_predictions=True)
         save_evaluation(directory, "test", scores, matrix.tolist(), baseline.CLASSES,
                         *predictions, image_names=names)
+        if args.method != "all":
+            print(f"Completed {method}: {directory}; metrics: {directory / 'test_metrics.json'}")
+            return
         row = {"condition": method, **scores}
         for metric in ("accuracy", "macro_f1", "mean_auc_ovr"):
             reference = rows[0][metric] if rows else row[metric]
