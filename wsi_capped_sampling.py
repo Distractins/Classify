@@ -38,7 +38,7 @@ def write_csv(path, header, rows):
     temporary.replace(path)
 
 
-def make_plan(source, cap, exclusions=()):
+def make_plan(source, cap, exclusions=(), report=True):
     """归属来自实际 FULL 子目录；不重新 shuffle 划分 WSI。"""
     if cap < 1:
         raise ValueError("每个 WSI/类别的限额必须为正数")
@@ -83,13 +83,62 @@ def make_plan(source, cap, exclusions=()):
     selected_assignments = {row[1]: row[3] for row in plan}
     if selected_assignments != assignments:
         raise ValueError("采样会丢失某个 WSI（可能该 WSI 图片被全部排除），拒绝生成")
+    if report:
+        print_summary(plan, assignments, excluded)
+    return plan, assignments
+
+
+def print_summary(plan, assignments, excluded):
+    counts_by_split = {split: dict.fromkeys(CLASSES, 0) for split in SPLITS}
+    slides_by_split = dict.fromkeys(SPLITS, 0)
+    for row in plan:
+        counts_by_split[row[3]][row[2]] += 1
+    for split in assignments.values():
+        slides_by_split[split] += 1
     for split in SPLITS:
-        counts = {cls: sum(r[3] == split and r[2] == cls for r in plan) for cls in CLASSES}
+        counts = counts_by_split[split]
         if not all(counts.values()):
             raise ValueError(f"{split} 某组织类别没有采样图片：{counts}")
-        print(f"{split}: {sum(s == split for s in assignments.values())} slides / "
+        print(f"{split}: {slides_by_split[split]} slides / "
               f"{sum(counts.values()):,} patches；{counts}", flush=True)
     print(f"共保留 {len(assignments)} 个 WSI、{len(plan):,} 张图片；排除 {len(excluded)} 张。", flush=True)
+
+
+def cached_plan(project, source, cap, exclusions, rebuild=False):
+    identity = {"source": str(source), "cap": cap, "seed": SEED,
+                "excluded": exclusions, "version": 1}
+    cache_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+    directory = project / "output/capped_sampling_checkpoint" / cache_id
+    plan_path, state_path = directory / "plan.json", directory / "state.json"
+    if not rebuild and plan_path.is_file() and state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("identity") == identity and state.get("sha256") == sha256(plan_path):
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            assignments = {}
+            for name, slide, cls, split, size in plan:
+                if slide in assignments and assignments[slide] != split:
+                    raise ValueError("缓存存在 WSI 跨集合")
+                assignments[slide] = split
+            print("恢复采样计划：跳过源目录重新扫描。源数据变化时必须加 --rebuild-plan。", flush=True)
+            print_summary(plan, assignments, exclusions)
+            return plan, assignments
+    plan, assignments = make_plan(source, cap, exclusions, report=False)
+    directory.mkdir(parents=True, exist_ok=True)
+    for path, value in ((plan_path, plan),):
+        temporary = path.with_name(path.name + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    temporary = state_path.with_name(state_path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump({"identity": identity, "sha256": sha256(plan_path)}, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(state_path)
+    print(f"完整采样计划断点已保存：{directory}", flush=True)
+    print_summary(plan, assignments, exclusions)
     return plan, assignments
 
 
@@ -155,6 +204,7 @@ def main(argv=None):
     parser.add_argument("--max-per-wsi-class", type=int, default=DEFAULT_CAP)
     parser.add_argument("--exclude-image", action="append", default=[], help="已确认坏图，例如 val/TUM/文件名.png")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--rebuild-plan", action="store_true", help="源数据变化后重新扫描和生成计划")
     args = parser.parse_args(argv)
     project = Path(args.project_root).resolve()
     source = Path(args.source) if args.source else config.paths(project)["raw"].with_name(config.paths(project)["raw"].name + "-FULL")
@@ -168,9 +218,9 @@ def main(argv=None):
     if target == source or source in target.parents or target in source.parents:
         raise ValueError("输出与源目录不能相同或互相包含")
     exclusions = sorted(set(name.replace("\\", "/") for name in args.exclude_image))
-    plan, assignments = make_plan(source, args.max_per_wsi_class, exclusions)
+    plan, assignments = cached_plan(project, source, args.max_per_wsi_class, exclusions, args.rebuild_plan)
     if args.dry_run:
-        print("预览完成；未复制或修改任何文件。")
+        print("预览完成；计划断点已保存，未复制图片或修改源数据。")
         return
     copy_plan(source, target, plan, assignments, args.max_per_wsi_class, exclusions)
 

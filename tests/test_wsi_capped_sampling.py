@@ -64,6 +64,17 @@ class CappedTests(unittest.TestCase):
         self.assertEqual(len(plan), 95)
         self.assertNotIn(bad, [f"{r[3]}/{r[2]}/{r[0]}" for r in plan])
 
+    def test_plan_cache_saved_before_summary_and_reused(self):
+        with patch.object(sampling, "print_summary", side_effect=RuntimeError("interrupted summary")):
+            with self.assertRaisesRegex(RuntimeError, "interrupted summary"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    sampling.cached_plan(self.base, self.source, 2, [])
+        with patch.object(sampling, "make_plan", side_effect=AssertionError("must not rescan")):
+            with contextlib.redirect_stdout(io.StringIO()):
+                plan, assignments = sampling.cached_plan(self.base, self.source, 2, [])
+        self.assertEqual(len(plan), 48)
+        self.assertEqual(len(assignments), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

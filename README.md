@@ -207,6 +207,8 @@ train/val/test 都采样，500 个 WSI 的总图片上限为 500×8×50=200,000 
 
 新数据集必须新建训练实验，不能用 FULL 的 last.pth 直接续训：
 
+采样计划现在保存到 `output/capped_sampling_checkpoint/`，在打印统计和复制之前原子保存。中断后同一命令可复用完整计划，并继续校验/复制已有副本。首次生成计划尚未保存时仍需重新扫描；dry-run 也会写入计划缓存，但不复制图片。缓存按源路径、限额、种子和排除清单区分，并校验缓存 SHA256。恢复时必须保持源数据不变；若增删或修改源图，加 `--rebuild-plan` 重新生成，已有 .building 若计划不同会拒绝混用。缓存不是实时源目录清单，不能自动发现新增或删除图片。断点不能修复非法指令、内存访问异常或运行时损坏。
+
 ```bat
 python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL-CAP50" --model efficientnet_b0 --run-name cap50_5ep --epochs 5 --batch-size 8 --lr 0.0001 --weight-decay 0.00001 --save-every-batches 100 --smoke-test
 ```
@@ -248,3 +250,33 @@ UNI 若实验采用 lr=3e-4、weight_decay=0.05、5 epochs，可显式指定，�
 保留 dataset_stat.py、dataset_sampling.py、wsi_subset_stdlib.py，已成功划分的数据训练时不用重建。标准库入口默认使用 output/stat/legacy_patch_map.csv，断点仍在 output/wsi_subset_checkpoint。恢复时保持原图不变，变化后加 --recheck-files。
 
 确认无需重建子集后可删除 output 中的扫描缓存；outputs/archive 另有备份后可手动删除。必须保留正式子集的三个集合及划分 CSV、需要比较的预训练权重，以及实验的 config/history/best/last。不要跨 Windows/Linux 拷贝虚拟环境。
+# 染色扰动鲁棒性测试（无需重新训练）
+
+训练结束并根据验证集选定 `weights/best.pth` 后，可以用独立脚本一次完成原始测试、Macenko 染色变化、HED 染色扰动三组评估。训练脚本与原有 `--evaluate-test` 不变；新脚本会重新计算原始测试作为同次运行的参照，因此不要求提前单独测试。仅加载模型参数，不训练、不更新权重，不读取临床文件。
+
+EfficientNet-B0 CAP50 示例（在项目根目录运行）：
+
+```bash
+python src/stage1_train_8cls/evaluate_stain_robustness.py --root "datasets/HMU-CRC-Hist550K-FULL-CAP50" --checkpoint "outputs/experiments/efficientnet_b0/cap50_5ep/weights/best.pth" --batch-size 8 --strength 0.1 --seed 42
+```
+
+冻结 UNI + Linear 示例：
+
+```bash
+python src/stage1_train_8cls/evaluate_stain_robustness.py --root "datasets/HMU-CRC-Hist550K-FULL-CAP50" --checkpoint "outputs/experiments/uni_frozen_linear/cap50_10ep/weights/best.pth" --batch-size 2 --strength 0.1 --seed 42
+```
+
+模型架构和 UNI 模式从 checkpoint 自动恢复，不需要额外指定 `--model`、`--uni-mode` 或预训练权重。仅加载本项目可信 checkpoint。使用训练时的完整数据集目录，脚本检查类别顺序、WSI 隔离及路径/标签/大小清单 fingerprint；该 fingerprint 不等同于图片内容哈希。
+
+默认输出到该实验的 `reports/stain_s0.1_seed42/`：
+
+- `original/`、`macenko/`、`hed/`：各组独立的指标 JSON、逐类 Precision/Recall/F1 CSV 和柱状图、混淆矩阵、ROC、逐类 AUC/AP、逐图概率预测及八类示例图片。
+- `comparison.csv`、`comparison.png`：三组指标对比；`*_drop_pp` 是原始值减扰动值后乘100，单位为百分点，负值表示扰动组指标更高。
+- `protocol.json`：权重 SHA256、数据清单 fingerprint、权重轮次、种子、强度、染色算法细节等记录。
+
+输出目录已存在时拒绝覆盖，可用 `--output "另一个新目录"` 指定新位置。三组使用完全相同的测试样本和标签，固定种子结合图片相对路径生成扰动，所有模型保持相同的 `--strength` 和 `--seed`。图片先按原有评估预处理缩放到224，再施加染色变换，最后执行 ImageNet 输入归一化；源图片不修改。解码失败或 Macenko 无法估计染色基底时会明确终止，不静默跳过样本或使用黑图。
+
+Macenko 条件是自定义的 **Macenko 基底估计 + 染色基底/浓度随机扰动**，不是染色归一化：OD 阈值0.15、SVD平面及角度1/99百分位估计两个基底；基底施加标准差 `strength/5` 的噪声并归一化，浓度分别乘以 `[1-strength, 1+strength]` 的均匀随机系数，保留重建残差。HED 条件用标准 H/E/D 向量进行有符号 OD 分解，仅扰动 H、E 系数，保留第三通道。`strength=0.1` 表示浓度缩放范围0.9～1.1，不表示保证视觉变化恰为10%。
+
+默认强度只是预设的实验起点，并非经本数据集验证的标准强度。应先用训练/验证图片检查形态与颜色是否合理，确定协议后再评估测试集；可预先设置0.05/0.1/0.2强度分别运行，所有模型采用一致协议，不能根据测试得分挑选强度。预览图片仅作展示，不用于测试集调参。单次固定种子的结果不代表统计显著性，不能等同于跨中心泛化证明；真实跨中心测试需要独立外部数据。
+
