@@ -101,7 +101,7 @@ def load_data(root):
 def build_model(name, project, pretrained=True, weight_override=None, uni_mode="finetune",
                 hidden_dim=256, dropout=0.1, ortho_weight=0.01, enhancer="none"):
     if enhancer != "none" and (name != "efficientnet_b0" or uni_mode != "finetune"):
-        raise ValueError("CNN AETHER currently requires efficientnet_b0 with default uni-mode")
+        raise ValueError("CNN enhancers require efficientnet_b0 with default uni-mode")
     if name == "uni":
         try:
             import timm
@@ -125,6 +125,10 @@ def build_model(name, project, pretrained=True, weight_override=None, uni_mode="
     if enhancer == "aether":
         from network.efficientnet_aether import EfficientNetAETHER
         return EfficientNetAETHER(model, ortho_weight)
+    if enhancer.startswith("morph"):
+        from network.morph import EfficientNetMORPH
+        variant = {"morph": "full", "morph_single_scale": "single_scale", "morph_no_gate": "no_gate"}[enhancer]
+        return EfficientNetMORPH(model, variant)
     if name == "uni":
         if uni_mode != "finetune":
             from network.frozen_uni import FrozenUNIClassifier
@@ -224,8 +228,8 @@ def main(argv=None):
     parser.add_argument("--root", "--dataset", dest="dataset", help="PAPER dataset directory, matching the server CLI")
     parser.add_argument("--project-root", default=str(PROJECT), help="Project directory containing pretrained and outputs")
     parser.add_argument("--model", choices=MODEL_NAMES, default="efficientnet_b0")
-    parser.add_argument("--enhancer", choices=("none", "aether"), default="none",
-                        help="Train EfficientNet-B0 + AETHER jointly; default preserves original baseline")
+    parser.add_argument("--enhancer", choices=("none", "aether", "morph", "morph_single_scale", "morph_no_gate"), default="none",
+                        help="Train EfficientNet-B0 with an optional enhancer; default preserves original baseline")
     parser.add_argument("--uni-mode", choices=("finetune", "linear", "mlp", "aether"), default="finetune")
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--head-dropout", type=float, default=0.1)
@@ -247,7 +251,7 @@ def main(argv=None):
                         help="Explicit corrupt validation image relative path; repeat for multiple images, keep files on disk")
     args = parser.parse_args(argv)
     if args.enhancer != "none" and (args.model != "efficientnet_b0" or args.uni_mode != "finetune"):
-        parser.error("--enhancer aether requires --model efficientnet_b0 and default --uni-mode")
+        parser.error("CNN enhancers require --model efficientnet_b0 and default --uni-mode")
     if args.model != "uni" and args.uni_mode != "finetune":
         parser.error("Frozen head modes are available only for UNI")
     if args.head_hidden_dim < 1 or not 0 <= args.head_dropout < 1 or args.ortho_weight < 0:
@@ -295,7 +299,7 @@ def main(argv=None):
                             args.uni_mode, args.head_hidden_dim, args.head_dropout, args.ortho_weight).to(device)
     head_config = {"hidden_dim": args.head_hidden_dim, "dropout": args.head_dropout,
                    "ortho_weight": args.ortho_weight} if args.uni_mode != "finetune" else None
-    if args.enhancer != "none":
+    if args.enhancer == "aether":
         head_config = {"ortho_weight": args.ortho_weight}
     print(f"Parameters: trainable={sum(p.numel() for p in model.parameters() if p.requires_grad):,}, "
           f"total={sum(p.numel() for p in model.parameters()):,}", flush=True)
