@@ -90,21 +90,14 @@ python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist
 
 ## 自动保存和断点恢复
 
-### 冻结 UNI：Linear、MLP 和 AETHER 对照
+### 冻结 UNI：Linear / MLP
 
-现有 `--model uni` 默认为 `--uni-mode finetune`，行为不变；CNN 的训练与旧断点保持兼容。新增 `--uni-mode linear/mlp/aether`：UNI 参数 requires_grad=False，始终 eval，forward_features 在 no_grad 内执行。优化器仅更新分类头，以及 AETHER 模式的增强模块。仍需完整加载本地 UNI .bin；训练中不缓存特征。
-
-三种冻结模式均移除 CLS/其他前缀 token，对空间 tokens 做均值聚合，避免基线使用 CLS 而方法使用空间 tokens 的混淆。AETHER 在聚合前增强 token；Linear 是 1024→8，MLP 默认 1024→256→GELU→Dropout(0.1)→8。AETHER 分类头仍为 Linear。AETHER 的 hard_cls_idx 保留原模块默认 (2,6,4)，在当前类别顺序下对应 DEB、STR、MUS。sim_matrix 暂不加入额外监督；不跨 patch 或 WSI 聚合。
-
-AETHER 总损失为 CE + `--ortho-weight` × ortho_reg（默认 0.01，经验起点，不代表最优值）；Linear/MLP 是 CE。AETHER 的 loss 曲线为含正则的总损失，不能与 CE-only 模式当作同一损失直接比较；accuracy/F1/AUC 计算一致。
+支持 finetune、linear、mlp 模式。冻结模式使用空间 token 均值池化与 CE 损失，仅训练分类头。旧 AETHER 已停用，现有 Linear/MLP 断点保持兼容。ortho-weight 仅为历史头配置兼容保留，当前不加入正交损失。
 
 ```bat
 python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model uni --uni-mode linear --run-name frozen_5ep --epochs 5 --batch-size 2 --lr 0.0001 --weight-decay 0.00001 --save-every-batches 100
 python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model uni --uni-mode mlp --run-name frozen_5ep --epochs 5 --batch-size 2 --lr 0.0001 --weight-decay 0.00001 --save-every-batches 100
-python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL" --model uni --uni-mode aether --run-name frozen_5ep --epochs 5 --batch-size 2 --lr 0.0001 --weight-decay 0.00001 --ortho-weight 0.01 --save-every-batches 100
 ```
-
-先在对应命令末尾加 --smoke-test 试跑；正式命令移除该项。恢复加 --resume；最终评估加 --evaluate-test（不要同时加 resume）。输出分别为 `outputs/experiments/uni_frozen_linear/frozen_5ep/`、`uni_frozen_mlp/frozen_5ep/`、`uni_frozen_aether/frozen_5ep/`。头配置及模式写入断点，模式不能相互续训；hidden_dim/dropout/ortho_weight 也需与原断点一致。现有 UNI 全参数微调结果和 CNN 结果无需重跑。
 
 冻结模式断点仍包含完整 UNI，便于独立恢复且不依赖后来被替换的预训练文件；因此冻结后断点仍较大，保存耗时并不会按可训练参数量同比减少。可调大 save-every-batches 减少磁盘开销。小模型测试可验证冻结及梯度逻辑，真实 UNI 的显存/速度和完整训练需在服务器试跑确认。
 
@@ -252,13 +245,9 @@ UNI 若实验采用 lr=3e-4、weight_decay=0.05、5 epochs，可显式指定，�
 确认无需重建子集后可删除 output 中的扫描缓存；outputs/archive 另有备份后可手动删除。必须保留正式子集的三个集合及划分 CSV、需要比较的预训练权重，以及实验的 config/history/best/last。不要跨 Windows/Linux 拷贝虚拟环境。
 # 染色扰动鲁棒性测试（无需重新训练）
 
-EfficientNet-B0 + AETHER 可通过训练器 `--model efficientnet_b0 --enhancer aether` 启用：ImageNet 预训练主干的最后特征图 `[B,1280,H,W]` 输入 AETHER，空间 token 均值池化后接原有 dropout 概率及新的8类 Linear 头；主干、模块、分类头全部训练，损失为 CE + `--ortho-weight` × 正交约束。AETHER 源码不变，难类索引对应 DEB/STR/MUS。默认不添加模块，旧基线和 UNI 模式保持原样。增强实验独立保存到 `outputs/experiments/efficientnet_b0_aether/<run-name>/`，checkpoint 记录模块配置，续跑及原始测试也必须传 `--enhancer aether`。染色测试脚本则从 checkpoint 自动恢复模块。
+新增实验性 PRISM 组合：`--model efficientnet_b0 --enhancer prism`，包含形态上下文细化、统计响应校准、组织证据汇聚；消融选项 `prism_no_local`、`prism_no_stats`、`prism_no_pool`。完整结构、来源、局限和实验方案见 [network/PRISM.md](network/PRISM.md)。MORPH 与原始基线继续保留，PRISM 输出到独立的 `efficientnet_b0_prism/<run-name>/`。三个组件不等于已验证的三项创新，效果需实验确认。
 
-```bash
-python src/stage1_train_8cls/train_wsi_baseline.py --root "datasets/HMU-CRC-Hist550K-FULL-CAP50" --model efficientnet_b0 --enhancer aether --run-name cap50_10ep --epochs 10 --batch-size 8 --lr 0.0001 --weight-decay 0.00001 --ortho-weight 0.01 --save-every-batches 100
-```
-
-续跑在同一指令末尾加 `--resume`。原始测试使用同一数据、模型、enhancer、实验名及 ortho-weight，末尾加 `--evaluate-test`（不加 resume）。该实验从 ImageNet 预训练开始，不沿用已训练的裸 EfficientNet checkpoint。正式运行前可加 `--smoke-test` 验证显存和数据流程；添加模块会增加资源需求，不保证沿用 batch8 一定适配所有显卡。
+当前 CNN 增强模块为 MORPH：`--model efficientnet_b0 --enhancer morph`，见 [network/MORPH.md](network/MORPH.md)。旧 AETHER 源码和命令入口已移除，历史实验结果保留；重现旧实验需要恢复对应历史代码。
 
 若需要分开执行，可给下方命令分别添加 `--method original`、`--method macenko`、`--method hed`。不传 `--output` 时会分别保存到 `reports/stain_s0.1_seed42_original/`、`reports/stain_s0.1_seed42_macenko/`、`reports/stain_s0.1_seed42_hed/`，各自互不覆盖。单组模式只生成该条件的报告，不生成三组汇总对比图表；每组以 `test_metrics.json` 保存完成为准。仍不支持组内批次断点恢复，某组中断后只需重跑该组（先移走或删除该组未完成输出目录），无需重跑其他已完成组。
 

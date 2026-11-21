@@ -26,6 +26,8 @@ from src.experiment_reports import save_history, save_evaluation
 CLASSES = ("ADI", "LYM", "DEB", "MUC", "MUS", "NORM", "STR", "TUM")
 SEED = 42
 MODEL_NAMES = ("efficientnet_b0", "resnet50", "resnet101", "uni")
+ENHANCERS = ("none", "morph", "morph_single_scale", "morph_no_gate",
+             "prism", "prism_no_local", "prism_no_stats", "prism_no_pool")
 # =================================================
 
 
@@ -102,6 +104,10 @@ def build_model(name, project, pretrained=True, weight_override=None, uni_mode="
                 hidden_dim=256, dropout=0.1, ortho_weight=0.01, enhancer="none"):
     if enhancer != "none" and (name != "efficientnet_b0" or uni_mode != "finetune"):
         raise ValueError("CNN enhancers require efficientnet_b0 with default uni-mode")
+    if enhancer not in ENHANCERS:
+        raise ValueError(f"Unsupported enhancer: {enhancer}")
+    if uni_mode not in ("finetune", "linear", "mlp"):
+        raise ValueError("Unsupported UNI mode; use finetune, linear or mlp")
     if name == "uni":
         try:
             import timm
@@ -122,17 +128,17 @@ def build_model(name, project, pretrained=True, weight_override=None, uni_mode="
             raise FileNotFoundError(f"Local pretrained weights not found: {path}")
         state = torch.load(path, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=True)
-    if enhancer == "aether":
-        from network.efficientnet_aether import EfficientNetAETHER
-        return EfficientNetAETHER(model, ortho_weight)
     if enhancer.startswith("morph"):
         from network.morph import EfficientNetMORPH
         variant = {"morph": "full", "morph_single_scale": "single_scale", "morph_no_gate": "no_gate"}[enhancer]
         return EfficientNetMORPH(model, variant)
+    if enhancer.startswith("prism"):
+        from network.prism import EfficientNetPRISM
+        variant = "full" if enhancer == "prism" else enhancer.removeprefix("prism_")
+        return EfficientNetPRISM(model, variant)
     if name == "uni":
         if uni_mode != "finetune":
             from network.frozen_uni import FrozenUNIClassifier
-            # Preserve existing AETHER hard-class indices under the current class order.
             return FrozenUNIClassifier(model, uni_mode, hidden_dim, dropout, ortho_weight)
         model.reset_classifier(8)
     elif name == "efficientnet_b0":
@@ -228,9 +234,9 @@ def main(argv=None):
     parser.add_argument("--root", "--dataset", dest="dataset", help="PAPER dataset directory, matching the server CLI")
     parser.add_argument("--project-root", default=str(PROJECT), help="Project directory containing pretrained and outputs")
     parser.add_argument("--model", choices=MODEL_NAMES, default="efficientnet_b0")
-    parser.add_argument("--enhancer", choices=("none", "aether", "morph", "morph_single_scale", "morph_no_gate"), default="none",
+    parser.add_argument("--enhancer", choices=ENHANCERS, default="none",
                         help="Train EfficientNet-B0 with an optional enhancer; default preserves original baseline")
-    parser.add_argument("--uni-mode", choices=("finetune", "linear", "mlp", "aether"), default="finetune")
+    parser.add_argument("--uni-mode", choices=("finetune", "linear", "mlp"), default="finetune")
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--head-dropout", type=float, default=0.1)
     parser.add_argument("--ortho-weight", type=float, default=0.01)
@@ -299,8 +305,6 @@ def main(argv=None):
                             args.uni_mode, args.head_hidden_dim, args.head_dropout, args.ortho_weight).to(device)
     head_config = {"hidden_dim": args.head_hidden_dim, "dropout": args.head_dropout,
                    "ortho_weight": args.ortho_weight} if args.uni_mode != "finetune" else None
-    if args.enhancer == "aether":
-        head_config = {"ortho_weight": args.ortho_weight}
     print(f"Parameters: trainable={sum(p.numel() for p in model.parameters() if p.requires_grad):,}, "
           f"total={sum(p.numel() for p in model.parameters()):,}", flush=True)
     if not args.smoke_test:

@@ -23,7 +23,7 @@ class TinyBackbone(nn.Module):
 
 class FrozenTests(unittest.TestCase):
     def test_backbone_frozen_and_heads_update(self):
-        for mode in ("linear", "mlp", "aether"):
+        for mode in ("linear", "mlp"):
             with self.subTest(mode=mode):
                 model = FrozenUNIClassifier(TinyBackbone(), mode, hidden_dim=8)
                 model.train()
@@ -37,8 +37,6 @@ class FrozenTests(unittest.TestCase):
                 loss = nn.functional.cross_entropy(logits, torch.arange(4)) + reg
                 loss.backward()
                 self.assertTrue(all(p.grad is None for p in model.backbone.parameters()))
-                if mode == "aether":
-                    self.assertIsNotNone(model.enhancer.signal_sep.proj_texture[1].weight.grad)
                 optimizer.step()
                 for key, value in model.backbone.state_dict().items():
                     self.assertTrue(torch.equal(value, original[key]))
